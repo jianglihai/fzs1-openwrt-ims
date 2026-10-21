@@ -1,0 +1,257 @@
+#!/bin/sh
+# patch-fzs —— 给厂商 FZS 短信系统打 IMS 对接补丁（幂等，可反复执行 / 可一键还原）
+# ============================================================================
+# 用法:
+#   /usr/lib/imsengine/patch-fzs          # 打补丁（缺哪块补哪块，已打则跳过）
+#   /usr/lib/imsengine/patch-fzs status   # 查看各块补丁状态
+#   /usr/lib/imsengine/patch-fzs restore  # 还原厂商原始 fzs-at / sms.js
+#
+# 设计原则（为什么要"注入"而不是"整体替换"）:
+#   /usr/libexec/fzs-at 与 /www/luci-static/resources/view/fzs/sms.js 的**文件所有权属于
+#   厂商包 luci-app-fzs**。若 imsengine 包直接覆盖这两个文件，opkg 会报文件冲突，
+#   且对方设备上的 fzs-at 版本可能与我们手上的不同（整体替换会抹掉他自己的版本特性）。
+#   ⇒ 本脚本只做**特征检测 + 片段注入**，原文件先备份成 *.orig-ims，随时可还原。
+#
+# 三块补丁:
+#   ① fzs-at: cmd_sms_send() 开头插 IMS 分支 —— 面板选「IMS 通道」或「模组1(EC200T)」都走
+#      imsengine 的 SIP MESSAGE，绕开 EC200T 固件 CS 域短信的 CMS 304/500 顽疾
+#      （模组2/EC200N 固件自带 IMS 栈，保留原生 AT+CMGS）
+#   ② fzs-at: 文件顶部插 ims 子命令（learn / status / submit）—— 供面板「学习 P-CSCF」
+#      按钮与状态显示调用；放顶部是为了不依赖各版本不同的命令分发结构
+#   ③ sms.js: 目标下拉加「IMS 通道」并设为默认 + 插入「IMS 通道」卡片（状态 + 学习按钮）
+# ============================================================================
+
+FZS_AT=/usr/libexec/fzs-at
+FZS_JS=/www/luci-static/resources/view/fzs/sms.js
+DIR=/usr/lib/imsengine
+
+MARK_SMS='[ims-bridge-sms]'          # ① 发送分支标记（通用，不含版本）
+MARK_IMS='[ims-bridge-ims]'          # ② ims 子命令标记（通用，不含版本）
+MARK_CARD='[ims-bridge-card]'        # ③ 面板卡片标记（通用，不含版本）
+# 各自的版本串：带版本号，用于判断"装的是不是这一代"。
+# ★ 幂等 + 可升级：已注入过就用「通用标记」跳过；但如果是上一代注入的，
+#   要先整段剥掉再重新注入（否则升级包里的新字段/新按钮永远进不去用户面板）。
+MARK_SMS_VER='[ims-bridge-sms] v5'
+MARK_IMS_VER='[ims-bridge-ims] v5'
+MARK_CARD_VER='[ims-bridge-card] v5'
+IMS_ITEM="{ v: 'ims', name: 'IMS 通道（推荐 · 走数据通道）' }"
+
+log() { echo "patch-fzs: $*"; }
+warn() { echo "patch-fzs: !! $*" >&2; }
+
+# ---------- 为什么不做「就地剥离旧片段」 ----------
+# 早期版本试过：检测到上一代片段就把它整段删掉、再注入新的一代。
+# 实测（2026-10-20）这条路会**把厂商文件写坏**：片段边界靠正则/行号推断，
+# 一旦算错就会连正常代码一起删掉（实测把一个 900 行的 fzs-at 删成 41 行）。
+# 后果远比"没升级到最新版"严重，所以改走最保守的策略：
+#
+#   ★ 检测到上一代片段 → 原样保留，只提示如何升级（功能不受影响，只是少了新字段）
+#   ★ 想升级到本代 → 执行: patch-fzs restore && patch-fzs
+#     （restore 用 *.orig-ims 备份还原成厂商原版，再全新注入，干净且可靠）
+#
+# 正常用 ipk 升级的用户不受影响：opkg 升级会先跑旧包 prerm 里的 restore，
+# 再由新包 postinst 全新注入 —— 走的就是"还原 + 注入"这条干净路径。
+# ---------------------------------------------------------------
+
+# ---------- ① fzs-at 发送分支 ----------
+p_sms() {
+	# ① 兼容旧标记（v3 及更早的热补丁已实现同样的转发，不必重复插）
+	grep -qF '[ims-bridge] v3' "$FZS_AT" 2>/dev/null && return 0
+	# ② 已注入当前代 → 跳过
+	grep -qF "$MARK_SMS_VER" "$FZS_AT" 2>/dev/null && return 0
+	# ③ 已注入上一代 → 保留不动（详见文件头"为什么不做就地剥离"）
+	if grep -qF "$MARK_SMS" "$FZS_AT" 2>/dev/null; then
+		log "① fzs-at 已有上一代 IMS 发送分支，保留不动（升级到本代: patch-fzs restore && patch-fzs）"
+		return 0
+	fi
+	awk -v snip="$DIR/fzs-at.sms.snippet" '
+		BEGIN { n=0; while ((getline line < snip) > 0) s[n++]=line }
+		{ print }
+		/^cmd_sms_send\(\) \{/ && !d { for (i=0;i<n;i++) print s[i]; d=1 }
+	' "$FZS_AT" > "$FZS_AT.new" 2>/dev/null
+	if grep -qF "$MARK_SMS" "$FZS_AT.new" 2>/dev/null; then
+		chmod +x "$FZS_AT.new" && mv "$FZS_AT.new" "$FZS_AT"
+		log "① fzs-at 发送分支已注入（ims/模组1 → IMS 通道）"
+	else
+		rm -f "$FZS_AT.new"
+		warn "① fzs-at 发送分支注入失败（未找到 cmd_sms_send() 锚点）；面板发送仍走原生 CS 域，可能出现 CMS 500。引擎自身收发不受影响"
+	fi
+}
+
+# ---------- ② fzs-at ims 子命令 ----------
+p_ims() {
+	# ★ 判断顺序很重要：先看"是不是已经是当前代"，最后才是"有没有同代痕迹"。
+	#   写成「有 MARK_IMS 就 return」会让旧代永远无法升级到新代（0.1.6 初版就这么写错过）。
+	# ① 已是「源码版」fzs-at（原生自带 ims 分发 + cmd_ims_status/learn）：不要重复注入，
+	#   否则顶部会多出一个同名的 if [ "$1" = "ims" ] 块，将来改源码版会出现"改了不生效"。
+	if grep -qF 'cmd_ims_status' "$FZS_AT" 2>/dev/null &&
+		grep -qF 'cmd_ims_learn' "$FZS_AT" 2>/dev/null; then
+		log "② fzs-at 已原生带 ims 子命令（源码版），无需注入"
+		return 0
+	fi
+	# ② 已注入当前代 → 跳过
+	grep -qF "$MARK_IMS_VER" "$FZS_AT" 2>/dev/null && return 0
+	# ③ 已注入上一代 → 保留不动
+	if grep -qF "$MARK_IMS" "$FZS_AT" 2>/dev/null; then
+		log "② fzs-at 已有上一代 ims 子命令，保留不动（升级到本代: patch-fzs restore && patch-fzs）"
+		return 0
+	fi
+	# 插在 shebang 之后：所有版本都有且只出现一次
+	awk -v snip="$DIR/fzs-at.ims.snippet" '
+		BEGIN { n=0; while ((getline line < snip) > 0) s[n++]=line }
+		{ print }
+		NR==1 { for (i=0;i<n;i++) print s[i] }
+	' "$FZS_AT" > "$FZS_AT.new" 2>/dev/null
+	if grep -qF "$MARK_IMS" "$FZS_AT.new" 2>/dev/null; then
+		chmod +x "$FZS_AT.new" && mv "$FZS_AT.new" "$FZS_AT"
+		log "② fzs-at ims 子命令已注入（learn / status / submit）"
+	else
+		rm -f "$FZS_AT.new"
+		warn "② fzs-at ims 子命令注入失败；面板「学习 P-CSCF」按钮不可用，请改用命令行 /etc/init.d/ims learn"
+	fi
+}
+
+# ---------- ③ sms.js 下拉项 / 默认选中 ----------
+p_js_item() {
+	grep -q "v: 'ims'" "$FZS_JS" 2>/dev/null && return 0
+	awk -v item="$IMS_ITEM" '
+		{ print }
+		/^var MODEMS = \[/ && !d { print "\t" item ","; d=1 }
+	' "$FZS_JS" > "$FZS_JS.new" 2>/dev/null
+	if grep -q "v: 'ims'" "$FZS_JS.new" 2>/dev/null; then
+		mv "$FZS_JS.new" "$FZS_JS"
+		log "③a sms.js 已增加「IMS 通道」下拉项（置顶）"
+	else
+		rm -f "$FZS_JS.new"
+		warn "③a sms.js 下拉项注入失败（未找到 var MODEMS 锚点）"
+	fi
+}
+
+p_js_default() {
+	grep -q "sel.value = 'ims'" "$FZS_JS" 2>/dev/null && return 0
+	# 在生成下拉 option 那一行之后补一句默认选中（用 sed 的 & 回引原行，避开 awk 的引号嵌套）
+	sed "s|MODEMS.map(function(t) { return E('option', { value: t.v }, t.name); }));|&\n\t\tsel.value = 'ims'; // [ims-bridge] 默认走 IMS|" \
+		"$FZS_JS" > "$FZS_JS.new" 2>/dev/null
+	if grep -q "sel.value = 'ims'" "$FZS_JS.new" 2>/dev/null; then
+		mv "$FZS_JS.new" "$FZS_JS"
+		log "③b sms.js 已设默认选中 IMS"
+	else
+		rm -f "$FZS_JS.new"
+		: # 只是默认值，失败不影响功能（用户可手工选 IMS）
+	fi
+}
+
+# ---------- ③c sms.js IMS 通道卡片 ----------
+p_js_card() {
+	# 同上：版本优先于存在性
+	grep -qF "$MARK_CARD_VER" "$FZS_JS" 2>/dev/null && return 0
+	# 已注入上一代 → 保留不动
+	if grep -qF "$MARK_CARD" "$FZS_JS" 2>/dev/null; then
+		log "③c sms.js 已有上一代 IMS 卡片，保留不动（升级到本代: patch-fzs restore && patch-fzs）"
+		return 0
+	fi
+	# 卡片定义插在 function reload() 之前（必须在 render 作用域内）
+	awk -v snip="$DIR/sms-ims-card.snippet" '
+		BEGIN { n=0; while ((getline line < snip) > 0) s[n++]=line }
+		/^[[:space:]]*function reload\(\) \{/ && !d { for (i=0;i<n;i++) print s[i]; d=1 }
+		{ print }
+	' "$FZS_JS" > "$FZS_JS.new" 2>/dev/null
+	if grep -qF "$MARK_CARD" "$FZS_JS.new" 2>/dev/null; then
+		mv "$FZS_JS.new" "$FZS_JS"
+		log "③c sms.js 已插入「IMS 通道」卡片（状态 + 学习 P-CSCF）"
+	else
+		rm -f "$FZS_JS.new"
+		warn "③c sms.js 卡片注入失败（未找到 function reload() 锚点）；不影响短信收发，仅面板少了状态/学习入口"
+		return 0
+	fi
+	# 把卡片挂到页面（return 的数组里 mainCard 后面加 imsCard）
+	if grep -q "mainCard, imsCard" "$FZS_JS" 2>/dev/null; then
+		:
+	else
+		sed 's/mainCard, head/mainCard, imsCard, head/' "$FZS_JS" > "$FZS_JS.new" 2>/dev/null
+		if grep -q "mainCard, imsCard" "$FZS_JS.new" 2>/dev/null; then
+			mv "$FZS_JS.new" "$FZS_JS"
+			log "③d sms.js 卡片已挂到页面"
+		else
+			rm -f "$FZS_JS.new"
+			warn "③d 卡片未挂到页面（return 行写法不同）；请手工在 return E(...) 数组里的 mainCard 后加 imsCard"
+		fi
+	fi
+}
+
+do_patch() {
+	local rc=0
+	# 备份只做一次（后续每个注入都基于「当前文件」叠加，绝不从备份再生成，
+	#   否则后一个补丁会把前一个的注入结果整体覆盖掉 —— 这是 v4 初版踩过的坑）
+	[ -f "$FZS_AT" ] && { [ -f "$FZS_AT.orig-ims" ] || cp -a "$FZS_AT" "$FZS_AT.orig-ims"; }
+	[ -f "$FZS_JS" ] && { [ -f "$FZS_JS.orig-ims" ] || cp -a "$FZS_JS" "$FZS_JS.orig-ims"; }
+	if [ ! -f "$FZS_AT" ]; then
+		warn "未找到 $FZS_AT（本机没装 luci-app-fzs？）跳过 fzs-at 补丁"
+		rc=1
+	else
+		p_sms
+		p_ims
+	fi
+	if [ ! -f "$FZS_JS" ]; then
+		warn "未找到 $FZS_JS（本机没装 luci-app-fzs？）跳过面板补丁"
+		rc=1
+	else
+		p_js_item
+		p_js_default
+		p_js_card
+	fi
+	return $rc
+}
+
+has() { grep -qF "$2" "$1" 2>/dev/null && echo "已打" || echo "未打"; }
+
+do_status() {
+	echo "补丁目标:"
+	for f in "$FZS_AT" "$FZS_JS"; do
+		[ -f "$f" ] || echo "  $f  [不存在]"
+	done
+	[ -f "$FZS_AT" ] && {
+		# ① 有两种形态：补丁注入的（MARK_SMS）与源码里自带的（v3 标记，见 p_sms 注释）。
+		#   只认前者会把「已装带 IMS 的面板源码版」误报成"未打"，所以两种都要认。
+		if grep -qF "$MARK_SMS" "$FZS_AT" 2>/dev/null; then
+			echo "  ① fzs-at 发送分支   : 已打（补丁注入）"
+		elif grep -qF '[ims-bridge] v3' "$FZS_AT" 2>/dev/null; then
+			echo "  ① fzs-at 发送分支   : 已打（源码版原生）"
+		else
+			echo "  ① fzs-at 发送分支   : 未打"
+		fi
+		if grep -qF 'cmd_ims_status' "$FZS_AT" 2>/dev/null &&
+			grep -qF 'cmd_ims_learn' "$FZS_AT" 2>/dev/null; then
+			echo "  ② fzs-at ims 子命令 : 已打（源码版原生）"
+		else
+			echo "  ② fzs-at ims 子命令 : $(has "$FZS_AT" "$MARK_IMS")"
+		fi
+	}
+	[ -f "$FZS_JS" ] && {
+		grep -q "v: 'ims'" "$FZS_JS" 2>/dev/null && echo "  ③a 面板 IMS 下拉项  : 已打" || echo "  ③a 面板 IMS 下拉项  : 未打"
+		grep -q "sel.value = 'ims'" "$FZS_JS" 2>/dev/null && echo "  ③b 默认选中 IMS     : 已打" || echo "  ③b 默认选中 IMS     : 未打"
+		echo "  ③c 面板 IMS 卡片    : $(has "$FZS_JS" "$MARK_CARD")"
+	}
+	echo "备份文件:"
+	for f in "$FZS_AT.orig-ims" "$FZS_JS.orig-ims"; do
+		[ -f "$f" ] && echo "  $f" || echo "  $f  [无]"
+	done
+}
+
+do_restore() {
+	for f in "$FZS_AT" "$FZS_JS"; do
+		if [ -f "$f.orig-ims" ]; then
+			cp -a "$f.orig-ims" "$f"
+			log "已还原 $f（来自 $f.orig-ims）"
+		else
+			log "$f 无备份，无需还原"
+		fi
+	done
+}
+
+case "$1" in
+	status)  do_status ;;
+	restore) do_restore ;;
+	*)       do_patch ;;
+esac
+exit 0

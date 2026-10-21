@@ -1,0 +1,135 @@
+#!/bin/sh
+# ims-ppp —— IMS 常驻期间的 CPE 上网守护（2026-10-19）
+#
+# 背景（RNDIS 单绑互斥的破解）：
+#   EC200T usbnet=3 = RNDIS + PPP 双通路。QNETDEVCTL 只能把【一个】CID 绑到 RNDIS，
+#   IMS(cid3) 常驻 RNDIS 期间 cid1(ctnet 上网) 无法经 RNDIS 出去。
+#   但 PPP 是另一条完全独立的 USB 数据链路（ttyUSB modem 口拨号），不占用 RNDIS：
+#     ppp0 ← PPP 拨号 cid1(ctnet) → IPv4 上网（本地流量/pushplus/fzs-fwd 全走它）
+#     rndis-modem1 ← QNETDEVCTL cid3(ims) → IMS v6（SIP/ESP/P-CSCF）
+#   两条通路物理并行，实测互不影响（IMS 已注册 + ping 0% 丢包 + pushplus 送达并存）。
+#
+# 职责：
+#   ① 探测 EC200T 的 PPP(modem) 口（排除 imsengine 占用的 AT 口）并 pppd 拨号（persist 自愈）
+#   ② 保 default 路由指向 ppp0（手工 replace via PPP peer —— "default dev ppp0" 无 gateway 形式内核不认）
+#   ③ 停 mwan3：它的 fwmark 分流会把本地流量打进 modem1 死口表（ENETUNREACH 根因），
+#      且本设备两个 mwan3 口（modem1 死 / modem2 无卡）本就都不可用，停掉只留 ppp0 单出口
+#   ④ 确保 dnsmasq 上游 DNS 走 ppp0 的运营商 DNS（uci network.modem1.dns）
+
+log() { echo "[ims-ppp] $*"; }
+
+ST_FILE=/tmp/ims_status.txt
+CMD=/tmp/ims-ppp-cmds.txt
+OUT=/tmp/ims-ppp-out.txt
+PPP_DNS='202.96.128.86 202.96.134.133'
+
+# engine_port: imsengine 正在用的 AT 口（status 文件 ENGINE_PORT 字段）
+engine_port() {
+	sed -n "s/^ENGINE_PORT='\([^']*\)'/\1/p" "$ST_FILE" 2>/dev/null
+}
+
+# find_tty: EC200T 的 PPP(modem) 口 = 响应 ATI 的 EC200T 口中非 imsengine 那个
+# ★ 2026-10-20 修: ep 带 /dev/ 前缀而 b 不带, 原比较恒不相等 → 排除失效 →
+#   pppd 抢了引擎的 AT 口进 PPP 数据模式 → 引擎 AT 全超时误报"未插卡"
+find_tty() {
+	local ep d b
+	ep=$(engine_port)
+	ep=${ep#/dev/}   # 统一去掉前缀再比
+	[ -n "$ep" ] || return 1
+	printf 'ATI\n' > "$CMD"
+	for d in /dev/ttyUSB*; do
+		[ -e "$d" ] || continue
+		b=${d#/dev/}
+		[ "$b" = "$ep" ] && continue
+		fzs-atio -t 3000 -b "$CMD" "$b" "$OUT" 2>/dev/null
+		if grep -q 'EC200T' "$OUT" 2>/dev/null; then
+			echo "$d"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# 当前 PPP 口（拨号目标），探测失败返回空
+PPP_TTY=""
+
+# ensure_dns: 一次性把 uci modem1.dns 改成 ppp0 的运营商 DNS（幂等）
+ensure_dns() {
+	local cur
+	cur=$(uci -q get network.modem1.dns)
+	[ "$cur" = "$PPP_DNS" ] && return 0
+	uci set network.modem1.dns="$PPP_DNS"
+	uci commit network
+	# 不 reload network（会重刷 RNDIS 静态配置/时序）—— 直接手动同步 resolv 文件
+	mkdir -p /tmp/resolv.conf.d
+	printf '# Interface ppp0 (ims-ppp)\nnameserver 202.96.128.86\nnameserver 202.96.134.133\n' \
+		> /tmp/resolv.conf.d/resolv.conf.auto
+	[ -x /etc/init.d/dnsmasq ] && /etc/init.d/dnsmasq reload >/dev/null 2>&1
+	log "dnsmasq 上游 DNS → $PPP_DNS"
+}
+
+# ensure_mwan3: mwan3 停（它的 mark 分流会把本地流量送进死口）
+ensure_mwan3() {
+	if [ -x /etc/init.d/mwan3 ] && /etc/init.d/mwan3 status >/dev/null 2>&1; then
+		/etc/init.d/mwan3 stop >/dev/null 2>&1
+		log "mwan3 已停（其两个口均不可用，避免 fwmark 分流进死口）"
+	fi
+}
+
+# ensure_fw_wan: 把 ppp0 加进 firewall 的 wan 区（★ LAN 侧上网的关键，2026-10-20）
+#   根因：ppp0 是 pppd 直接拨出来的，不是 netifd 接口，默认不在任何 firewall zone。
+#   fw4(nftables) 的 masquerade 只对 wan 区设备集合作 NAT —— 少了 ppp0，
+#   结果就是「设备自己能上网（源=10.x），但下面接的电脑/手机一律上不了网
+#   （源=192.168.2.x 出 ppp0 不做 NAT，回程进不来）」。
+#   幂等：zone 设备表里已有 ppp0 就什么都不做（避免每 15s reload 一次防火墙）。
+ensure_fw_wan() {
+	local zn dev
+	# 找 name='wan' 的 zone 下标（配置可能不是 @zone[1]）
+	zn=$(uci show firewall 2>/dev/null | sed -n "s/^firewall\.@zone\[\([0-9]*\)\]\.name='wan'/\1/p" | head -1)
+	[ -n "$zn" ] || return 0
+	dev=$(uci -q get firewall.@zone[$zn].device 2>/dev/null)
+	case " $dev " in *" ppp0 "*) return 0 ;; esac
+	uci add_list firewall.@zone[$zn].device='ppp0' >/dev/null 2>&1 || return 0
+	uci commit firewall
+	[ -x /etc/init.d/firewall ] && /etc/init.d/firewall reload >/dev/null 2>&1
+	log "ppp0 已加入 firewall wan 区（LAN 侧 masquerade 生效）"
+}
+
+# ensure_route: default 走 ppp0（via PPP peer）
+ensure_route() {
+	local peer
+	ip -br addr show ppp0 2>/dev/null | grep -q '[0-9]' || return 0
+	ip route show default 2>/dev/null | grep -q 'dev ppp0' && return 0
+	peer=$(ip -4 route show dev ppp0 proto kernel 2>/dev/null | awk '{print $1; exit}')
+	[ -n "$peer" ] || return 0
+	if ip route replace default via "$peer" dev ppp0 2>/dev/null; then
+		log "default → ppp0 via $peer"
+	fi
+}
+
+# 首次启动：环境准备
+ensure_mwan3
+ensure_dns
+ensure_fw_wan
+
+while :; do
+	# pppd 活着？不在就（重新）找 PPP 口并拨号
+	if ! pidof pppd >/dev/null 2>&1; then
+		if [ -z "$PPP_TTY" ] || [ ! -e "$PPP_TTY" ]; then
+			PPP_TTY=$(find_tty)
+			[ -n "$PPP_TTY" ] || { log "EC200T PPP 口未找到（imsengine 状态未就绪?）15s 后重试"; sleep 15; continue; }
+			log "PPP 口 = $PPP_TTY"
+		fi
+		log "启动 pppd (cid1 ctnet) …"
+		pppd "$PPP_TTY" 115200 \
+			connect '/usr/sbin/chat -v -t 15 "" AT OK ATD*99***1# CONNECT' \
+			nodetach persist maxfail 0 noauth novj novjccomp noccp noaccomp \
+			ipcp-accept-local ipcp-accept-remote usepeerdns \
+			logfile /tmp/ims-pppd.log >/dev/null 2>&1 &
+		sleep 12
+	fi
+	ensure_route
+	ensure_mwan3
+	ensure_fw_wan
+	sleep 15
+done

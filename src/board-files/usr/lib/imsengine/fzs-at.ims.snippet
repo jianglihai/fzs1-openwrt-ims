@@ -1,0 +1,48 @@
+# [ims-bridge-ims] v5 IMS 子命令（面板「IMS 通道」卡片的 学习 P-CSCF / 刷新状态 调它）
+#   放在文件最顶部、所有函数定义之前 —— 这样不依赖任何版本的命令分发结构（case "$1" in ...），
+#   对厂商 fzs-at 的任何版本都能注入成功。调用链：
+#     LuCI 面板 → fzs-at ims learn  → /etc/init.d/ims learn  → imsengine learn
+#     LuCI 面板 → fzs-at ims status → 读 /tmp/ims_status.txt（引擎每轮刷新）
+if [ "$1" = "ims" ]; then
+	case "$2" in
+		learn)
+			shift 2
+			_r=$(/etc/init.d/ims learn "$@" 2>&1); _rc=$?
+			case "$_r" in
+			\{*\}) printf '%s\n' "$_r" ;;
+			*)     _e=$(printf '%s' "$_r" | tr '\r\n' '  ' | sed 's/"/'"'"'/g')
+			       [ -n "$_e" ] || _e="学习失败（无输出, rc=$_rc）"
+			       printf '{"ok":false,"err":"%s"}\n' "$_e" ;;
+			esac
+			exit $_rc ;;
+		status)
+			_st="未安装"; _det=""; _imsi=""
+			_up=""; _rx=""; _next=""
+			if [ -r /tmp/ims_status.txt ]; then
+				. /tmp/ims_status.txt 2>/dev/null
+				_st="${STATE:-未知}"; _det="${DETAIL:-}"; _imsi="${T_IMSI:-}"
+				# 0.1.6 起引擎额外写入注册租期信息（回答"注册会不会过期"）
+				_up="${UP_SEC:-}"; _rx="${NET_RX_AGO:-}"; _next="${NEXT_RENEW:-}"
+			elif [ -x /etc/init.d/ims ]; then
+				_st="未启动"
+			fi
+			_d=$(printf '%s' "$_det" | tr '\r\n' '  ' | sed 's/"/'"'"'/g')
+			printf '{"state":"%s","detail":"%s","imsi":"%s","up_sec":"%s","net_rx_ago":"%s","next_renew":"%s"}\n' \
+				"$_st" "$_d" "$_imsi" "$_up" "$_rx" "$_next"
+			exit 0 ;;
+		submit)
+			shift 2
+			exec /etc/init.d/ims submit "$@" ;;
+		native)
+			# [ims-bypass] 探测"固件自带 IMS 栈且已注册"的模组: 输出 "<模组号> <AT口>"
+			# 有则 init.d/ims 旁路 imsengine（短信走该模组原生通道）; 无则 rc!=0
+			_r=$(/etc/init.d/ims native 2>/dev/null)
+			[ -n "$_r" ] || exit 1
+			printf '%s\n' "$_r"
+			exit 0 ;;
+		*)
+			echo "fzs-at ims {learn|status|submit|native}" >&2
+			exit 1 ;;
+	esac
+fi
+# [/ims-bridge-ims] 结束标记 —— patch-fzs 靠这对标记定位旧片段边界以便升级，勿删

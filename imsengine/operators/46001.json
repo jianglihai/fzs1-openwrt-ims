@@ -1,0 +1,71 @@
+{
+  "_comment": "联通黄金配方。源自 210 项目实战 200 OK 全链路（210/uvolte_app/assets/conf/operators/46001.json），参数未改，仅补 PC 协议栈所需字段。改本文件即热生效。",
+  "name": "联通",
+  "imsi_prefix": "46001",
+  "verified": true,
+  "domain": "ims.mnc001.mcc460.3gppnetwork.org",
+  "impu_style": "imsi",
+  "transport": "udp",
+  "pcscf_fallback": [
+    "2408:8142:6001:1101::1"
+  ],
+  "pcscf_port": 5060,
+  "smsc_psi": "tel:+8613010761500",
+  "ipsmgw_fallback": "sip:as52.ipsmgw.ims.chinaunicom.cn",
+  "auth": {
+    "algo": "AKAv1-MD5",
+    "aid": null
+  },
+  "ipsec": {
+    "alg": "hmac-sha-1-96",
+    "ealg": "null",
+    "spi_c": 23456789,
+    "spi_s": 12345678,
+    "ue_port_tx": 2468,
+    "ue_port_rx": 1357,
+    "server_port": 9900
+  },
+  "headers": {
+    "supported": "path, gruu",
+    "sec_client": "ipsec-3gpp;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null;spi-c={spi_c};spi-s={spi_s};port-c={port_c};port-s={port_s}",
+    "contact_tags": ";+g.3gpp.accesstype=\"3GPP-E-UTRAN-FDD\";+g.3gpp.smsip;+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\"",
+    "qop_auth": false,
+    "subscribe_reg": false,
+    "user_agent": "imsengine-v0.4",
+    "accept_contact": "*;+g.3gpp.smsip"
+  },
+  "registration": {
+    "expires": 600000,
+    "renew_after_min": 30,
+    "full_reregister_after_min": 45,
+    "full_rereg_in_call": 0,
+    "retry_min_ms": 600000,
+    "noresp_retry_ms": 60000,
+    "noresp_streak_limit": 5,
+    "reg_timeout_ms": 240000
+  },
+  "keepalive": {
+    "options_interval_ms": 60000,
+    "watchdog_ms": 30000,
+    "silence_limit_ms": 90000
+  },
+  "media": {
+    "rtp_port": 40000,
+    "codec_pref": [
+      "AMR-WB",
+      "AMR",
+      "PCMU",
+      "PCMA"
+    ],
+    "_comment_answ": "来电接听时机：-1=不自动接(180后保持振铃,等answer/hangup外部命令) N>0=180+振铃N秒自动接 0=秒接(无180)。⚠️2026-09-22主人拍板：自动接听系测试期产物，正式交付任何模板一律-1禁用；联通SBC对180流程precondition校验严格，此形态实机通话待验证",
+    "auto_answer_after_s": -1,
+    "_comment_rec": "通话下行音频落盘（AMR-WB 裸流，之后用 tools/uvo_audio.py 转 WAV 试听）",
+    "record": true,
+    "record_dir": "_tmp/calls"
+  },
+  "imsi_prefixes": [
+    "46001",
+    "46006",
+    "46009"
+  ]
+}

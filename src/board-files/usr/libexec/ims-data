@@ -1,0 +1,160 @@
+#!/bin/sh
+# ims-data —— 数据上网守护（旁路模式专用，2026-10-21）
+#
+# 场景：卡插在自带 IMS 栈的模组（如 EC200N）上时，imsengine 旁路不跑，
+#       RNDIS 没有被 IMS 承载占用，可以直接把数据 CID 绑到 RNDIS 网卡上网。
+#
+#   对比 /usr/libexec/ims-ppp：那是给 EC200T 用的 ——
+#   EC200T 无 IMS 栈，imsengine 必须自建承载并占用 RNDIS（QNETDEVCTL=2,<cid>,1），
+#   而 QNETDEVCTL 同时只能绑一个 CID，所以上网只能改走另一条物理链路 PPP 拨号。
+#   本脚本走的是相反的路：不占 RNDIS → 直接绑数据 CID → RNDIS 上网。
+#
+# 职责：
+#   ① 找"有卡"的模组 AT 口 → 取数据 CID（APN 不含 ims 的第一个，通常 cid1）
+#   ② AT+QNETDEVCTL=1,<cid>,1 绑到该模组的 RNDIS 网卡
+#      （op=1 是数据承载；op=2 是 IMS 承载，在自带 IMS 的模组上会被拒）
+#   ③ 保 default 路由指向该网卡（清掉指向空槽模组的那条）
+#   ④ 确保网卡在 firewall wan 区（LAN 侧 masquerade）
+#
+# 幂等：每轮检测，已就绪就什么都不做。
+
+log() { logger -t ims-data "$*"; }
+
+ATIO=""
+for _c in /usr/bin/fzs-atio /usr/libexec/fzs-atio /usr/sbin/fzs-atio; do
+	[ -x "$_c" ] && { ATIO="$_c"; break; }
+done
+
+# at <口> <AT命令> —— 回显响应（tr 掉 \r）
+at() {
+	local p="$1" c="$2" d
+	d=${TMPD:-/tmp}/ims-data.$$
+	mkdir -p "$d"
+	printf '%s\r' "$c" > "$d/in"
+	"$ATIO" -t 3000 -b "$d/in" "$p" "$d/out" >/dev/null 2>&1
+	tr -d '\r' < "$d/out" 2>/dev/null
+	rm -rf "$d"
+}
+
+# tty_to_iface <口> —— 由 sysfs 推导该 tty 属于哪张 RNDIS 网卡
+tty_to_iface() {
+	local p=${1#/dev/} u i
+	# ★ head -1 必须: sysfs 路径里 "1-1.2" 会出现两次, grep -o 输出两行,
+	#   $u 带换行后 *"$u"* 就永远匹配不上 → 网卡推导失败
+	u=$(readlink -f "/sys/class/tty/$p/device" 2>/dev/null | grep -o '1-1\.[0-9]' | head -1)
+	[ -n "$u" ] || return 1
+	for i in rndis-modem1 rndis-modem2; do
+		case "$(readlink -f "/sys/class/net/$i/device" 2>/dev/null)" in
+			*"$u"*) echo "$i"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+# data_cid <口> —— 第一个 APN 不含 ims 的 CID
+data_cid() {
+	at "$1" 'AT+CGDCONT?' \
+		| sed -n 's/^+CGDCONT: *\([0-9]*\),"[^"]*","\([^"]*\)".*/\1 \2/p' \
+		| awk '{ if (tolower($2) !~ /ims/) { print $1; exit } }'
+}
+
+# ensure_route <网卡> —— default 只指向它
+ensure_route() {
+	local ifc="$1" gw cur d
+	gw=$(ip -4 route show dev "$ifc" 2>/dev/null | awk '/^default/{print $3; exit}')
+	[ -n "$gw" ] || gw=192.168.43.1
+	cur=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+	if [ "$cur" = "$ifc" ]; then return 0; fi
+	# 清掉指向别的口（多半是没插卡那个模组）的默认路由
+	for d in $(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}'); do
+		[ "$d" = "$ifc" ] || ip route del default dev "$d" 2>/dev/null
+	done
+	ip route add default via "$gw" dev "$ifc" metric 10 2>/dev/null \
+		&& log "default → $ifc via $gw（原 ${cur:-无}）"
+}
+
+# ensure_fw_wan —— 两张 RNDIS 网卡都应在 wan 区（LAN 侧 masquerade）
+ensure_fw_wan() {
+	local zn net
+	zn=$(uci show firewall 2>/dev/null | sed -n "s/^firewall\.@zone\[\([0-9]*\)\]\.name='wan'/\1/p" | head -1)
+	[ -n "$zn" ] || return 0
+	net=$(uci -q get "firewall.@zone[$zn].network" 2>/dev/null)
+	case " $net " in
+		*" modem1 "*) ;;
+		*) uci add_list "firewall.@zone[$zn].network"='modem1' >/dev/null 2>&1
+		   uci commit firewall; /etc/init.d/firewall reload >/dev/null 2>&1
+		   log "modem1 已加入 firewall wan 区" ;;
+	esac
+	case " $net " in
+		*" modem2 "*) ;;
+		*) uci add_list "firewall.@zone[$zn].network"='modem2' >/dev/null 2>&1
+		   uci commit firewall; /etc/init.d/firewall reload >/dev/null 2>&1
+		   log "modem2 已加入 firewall wan 区" ;;
+	esac
+}
+
+# ensure_dns —— 统一用公共 DNS（关键，否则"能 ping 通 IP 但网页打不开"）
+#   根因: modem1/modem2 在 uci 里配的是运营商专属 DNS（如电信 202.96.128.86）。
+#   换卡后（联通卡去问电信 DNS）conntrack 里就是 [UNREPLIED] 超时，
+#   要等它超时才轮到下一个 → 表现为解析极慢 / 网页打不开。
+#   阿里 223.5.5.5 / 腾讯 119.29.29.29 对三家运营商都可达。
+#   注: 114.114.114.114 在电信 ctnet 下实测不通，只作第三备选。
+ensure_dns() {
+	local want='223.5.5.5 119.29.29.29' c1 c2
+	c1=$(uci -q get network.modem1.dns)
+	c2=$(uci -q get network.modem2.dns)
+	if [ "$c1" != "$want" ] || [ "$c2" != "$want" ]; then
+		uci set network.modem1.dns="$want"
+		uci set network.modem2.dns="$want"
+		uci commit network
+		log "modem1/modem2 DNS → $want（原 ${c1:-无}）"
+	fi
+	# 直接写 resolv.conf.auto；不 reload network（会重刷 RNDIS 时序）
+	if ! grep -q '223\.5\.5\.5' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null; then
+		mkdir -p /tmp/resolv.conf.d
+		printf '# ims-data: 统一公共 DNS\nnameserver 223.5.5.5\nnameserver 119.29.29.29\nnameserver 114.114.114.114\n' \
+			> /tmp/resolv.conf.d/resolv.conf.auto
+		[ -x /etc/init.d/dnsmasq ] && /etc/init.d/dnsmasq reload >/dev/null 2>&1
+		log "dnsmasq 上游 DNS → $want"
+	fi
+}
+
+[ -n "$ATIO" ] || { log "fzs-atio 不可用，退出"; exit 1; }
+
+ensure_fw_wan
+ensure_dns
+
+while :; do
+	PORT=""
+	for p in /dev/ttyUSB2 /dev/ttyUSB4; do
+		[ -c "$p" ] || continue
+		at "$p" 'AT+CPIN?' 2>/dev/null | grep -q 'READY' || continue
+		PORT="$p"; break
+	done
+
+	if [ -z "$PORT" ]; then
+		log "未找到有卡的模组，20s 后重试"
+		sleep 20
+		continue
+	fi
+
+	IF=$(tty_to_iface "$PORT")
+	CID=$(data_cid "$PORT")
+	if [ -z "$IF" ] || [ -z "$CID" ]; then
+		log "$PORT: 网卡=${IF:-?} 数据CID=${CID:-?} 未就绪，20s 后重试"
+		sleep 20
+		continue
+	fi
+
+	# 未绑则绑（QNETDEVCTL=1,<cid>,1 = 数据承载）
+	if ! at "$PORT" 'AT+QNETDEVCTL?' 2>/dev/null | grep -q "^+QNETDEVCTL: 1,$CID,"; then
+		at "$PORT" "AT+QNETDEVCTL=1,$CID,1" >/dev/null 2>&1
+		log "绑数据 CID$CID → $IF（$PORT）"
+		sleep 3
+	fi
+
+	ensure_route "$IF"
+	ensure_fw_wan
+	ensure_dns
+	sleep 20
+done

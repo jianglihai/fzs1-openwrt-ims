@@ -1,0 +1,79 @@
+{
+  "_comment": "电信模板（2026-09-18 对话5 实测校准）。PCO 动态下发（当前 SBC 池 240e:187:c280:400::44/c4），fallback 数组会随换代过时——设备内栈另有 radio log 提取正解。特征：UDP 全程可用 + 受保护源端口=port-c(2469)/Via=port-rx(1358)。",
+  "name": "电信",
+  "imsi_prefix": "46011",
+  "verified": true,
+  "domain": "ims.mnc011.mcc460.3gppnetwork.org",
+  "impu_style": "imsi",
+  "transport": "tcp",
+  "pcscf_fallback": [
+    "240e:f8:f005:1000::16",
+    "240e:f8:f805::19",
+    "240e:187:c280:400::44",
+    "240e:187:c280:400::c4",
+    "240e:187:c280:400::2024",
+    "240e:f8:f805::4"
+  ],
+  "pcscf_port": 5060,
+  "smsc_psi": "tel:+8613010761500",
+  "ipsmgw_fallback": "",
+  "auth": {
+    "algo": "AKAv1-MD5",
+    "aid": null
+  },
+  "ipsec": {
+    "alg": "hmac-sha-1-96",
+    "ealg": "null",
+    "spi_c": 23456789,
+    "spi_s": 12345678,
+    "ue_port_tx": 2468,
+    "ue_port_rx": 1357,
+    "port_c_lo": 40000,
+    "port_c_hi": 60000,
+    "server_port": 5062
+  },
+  "headers": {
+    "supported": "path, sec-agree",
+    "sec_client": "ipsec-3gpp;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null;spi-c={spi_c};spi-s={spi_s};port-c={port_c};port-s={port_s}",
+    "contact_tags": ";+g.3gpp.accesstype=\"3GPP-E-UTRAN-FDD\";+g.3gpp.smsip;+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\"",
+    "qop_auth": true,
+    "subscribe_reg": true,
+    "user_agent": "imsengine-v0.4",
+    "accept_contact": ""
+  },
+  "registration": {
+    "expires": 600000,
+    "renew_after_min": 30,
+    "renew_transport": "udp",
+    "_comment_renew": "2026-09-21 实测：UDP 刷新恒 403（凭据复用/空凭据+SecVerify=403 0x24002-0x7D2，加SecClient=无响应）。真实电信终端 Gm 走 TCP 且 IPsec policy 按地址匹配（TCP 自动被 ESP 保护）→ renew_transport=tcp。renew_sec_* 开关实测无效保持 false。注：'通话中推迟'只是拖到租期/SA 死线（~61min），必须刷新 200 滚动租期才是真解（主人 22:50 指出）。",
+    "renew_sec_verify": false,
+    "renew_noauth": false,
+    "renew_sec_client": false,
+    "retry_min_ms": 600000,
+    "noresp_retry_ms": 60000,
+    "noresp_streak_limit": 5,
+    "reg_timeout_ms": 240000,
+    "renew_integrity": true
+  },
+  "keepalive": {
+    "options_interval_ms": 60000,
+    "watchdog_ms": 30000,
+    "silence_limit_ms": 90000
+  },
+  "media": {
+    "rtp_port": 40000,
+    "codec_pref": [
+      "AMR-WB",
+      "AMR",
+      "PCMU",
+      "PCMA"
+    ],
+    "auto_answer_after_s": -1,
+    "_comment_answ": "来电接听时机：-1=不自动接(180后保持振铃,等answer/hangup外部命令) N>0=振铃N秒自动接 0=秒接。⚠️2026-09-22主人拍板：自动接听系测试期产物，正式交付任何模板一律-1禁用（代码缺省值已同步改-1）"
+  },
+  "imsi_prefixes": [
+    "46011",
+    "46003",
+    "46005"
+  ]
+}

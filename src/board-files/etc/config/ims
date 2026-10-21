@@ -1,0 +1,8 @@
+config ims 'ims'
+	option enabled '1'
+	# IMS 承载所在 RNDIS 网卡（EC200T cid3 → 本网卡）
+	option iface 'rndis-modem1'
+	# IMS PDP 的 CID（CPE 实证: ims=cid3; cid2 不可激活）
+	option cid '3'
+	# AT 口号: auto=自动探测 EC200T, 或指定 /dev/ttyUSB2 等
+	option at_port 'auto'

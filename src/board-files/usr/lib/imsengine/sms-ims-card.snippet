@@ -1,0 +1,87 @@
+		// [ims-bridge-card] v5 — imsengine 补丁标记，勿删（patch-fzs 靠它判断幂等/代次）
+		// ---- IMS 通道卡片（2026-10-20 新增）----
+		//   背景：本机两块模组里，EC200T（模组1）固件**不含 IMS/VoLTE 栈**，
+		//   原生 AT+CMGS 只能走 CS 域 —— 这就是面板发短信报「CMS 错误 500」的根因，
+		//   且它自己**读不出 P-CSCF 地址**。EC200N（模组2）固件带原生 IMS，能读到。
+		//   所以流程是：把这张卡换插到模组2 → 点「学习 P-CSCF」→ 引擎用原生 IMS 注册
+		//   成功后读出 P-CSCF，按 IMSI/ICCID 精确存盘 → 卡插回模组1，之后 EC200T
+		//   直接用学到的地址注册（一次命中，不再逐个试 6 个候选）。
+		var stIms = E('span', { 'class': 'fzs-status' }, '读取中…');
+		var btnImsRefresh = E('button', { 'class': 'fzs-hbtn' }, '刷新状态');
+		var btnImsLearn = E('button', { 'class': 'cbi-button' }, '学习 P-CSCF');
+
+		// 秒 → “3 分 20 秒” 这类人话
+		function durSec(n) {
+			n = parseInt(n, 10);
+			if (isNaN(n) || n < 0) return null;
+			if (n < 60) return n + ' 秒';
+			if (n < 3600) return Math.floor(n / 60) + ' 分';
+			return Math.floor(n / 3600) + ' 小时 ' + Math.floor((n % 3600) / 60) + ' 分';
+		}
+
+		function imsStatus() {
+			stIms.textContent = '读取中…';
+			return fs.exec(FZS_AT, [ 'ims', 'status' ]).then(function(r) {
+				var d = null;
+				try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
+				if (!d) { stIms.textContent = '❌ ' + errMsg(r, null); return; }
+				// ★ 没装 imsengine 时把「IMS 通道」这个下拉项去掉，避免用户选了却发不出。
+				//   （fzs-at 侧也有同样保险：/etc/init.d/ims 不存在会回退原生 CS 域）
+				if (d.state === '未安装') {
+					for (var i = sel.options.length - 1; i >= 0; i--) {
+						if (sel.options[i].value === 'ims') sel.remove(i);
+					}
+					if (sel.value === 'ims') sel.value = '1';
+				}
+				var t = d.state || '未知';
+				if (d.detail) t += ' · ' + d.detail;
+				if (d.imsi) t += '（IMSI ' + d.imsi + '）';
+				// 租期信息：让人一眼看出"注册稳不稳"，不用去翻日志
+				var up = durSec(d.up_sec);
+				if (up) t += ' · 已在线 ' + up;
+				if (d.next_renew) t += ' · 下次续租 ' + d.next_renew;
+				var rx = parseInt(d.net_rx_ago, 10);
+				if (!isNaN(rx) && rx >= 0) {
+					t += ' · 网络侧最后一次响应 ' + (rx < 5 ? '刚刚' : durSec(rx) + '前');
+				}
+				stIms.textContent = (d.state === '已注册' ? '✅ ' : '⚠️ ') + t;
+			}).catch(function(e) { stIms.textContent = '❌ ' + e; });
+		}
+
+		btnImsRefresh.addEventListener('click', function() { imsStatus(); });
+
+		btnImsLearn.addEventListener('click', function() {
+			btnImsLearn.disabled = true;
+			stIms.textContent = '学习中…（自动找 EC200N 口 → 开原生 IMS → 读 P-CSCF，最长约 90 秒，请勿断电）';
+			fs.exec(FZS_AT, [ 'ims', 'learn' ]).then(function(r) {
+				var d = null;
+				try { d = JSON.parse((r && r.stdout) || ''); } catch (e) {}
+				btnImsLearn.disabled = false;
+				if (d && d.ok) {
+					var a = (d.pcscf && d.pcscf.length) ? d.pcscf.join(' / ') : '(未读到)';
+					stIms.textContent = '✅ 已学到 P-CSCF：' + a + ' —— 卡可以插回模组1(EC200T) 了';
+				} else {
+					stIms.textContent = '❌ ' + ((d && d.err) ? d.err : errMsg(r, d));
+				}
+				imsStatus();
+			}).catch(function(e) {
+				btnImsLearn.disabled = false;
+				stIms.textContent = '❌ ' + e;
+				imsStatus();
+			});
+		});
+
+		var imsCard = E('div', { 'class': 'cbi-section fzs-card', style: 'margin-top:1em' }, [
+			E('h3', { 'class': 'fzs-card-h' }, [ E('span', {}, 'IMS 通道'), stIms, btnImsRefresh ]),
+			E('div', { 'class': 'cbi-section-node fzs-body' }, [
+				E('div', { 'class': 'fzs-actions' }, [ btnImsLearn ]),
+				E('div', { 'class': 'fzs-tip' },
+					'短信默认走 IMS 通道（数据通道），不再用模组的 CS 域短信，EC200T 的 CMS 500 报错由此根治。' +
+					'「学习 P-CSCF」只在换卡/换运营商后需要做一次：把卡插到模组2(EC200N，固件带原生 IMS) 上点一次，' +
+					'学到地址后把卡插回模组1(EC200T) 即可长期复用；同一张卡下次插回来不用再学。')
+			])
+		]);
+
+		imsStatus();
+
+		// [/ims-bridge-card] 结束标记 —— patch-fzs 靠这对标记定位旧片段边界以便升级，勿删

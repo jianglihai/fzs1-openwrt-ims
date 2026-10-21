@@ -1,0 +1,111 @@
+# ============================================================================
+#  编译 MIBOX 668M2 (FZS S1) 固件 —— 内置 IMS 短信通道 + 面板 0.3.1
+#
+#  · 公开仓库：GitHub Actions 对 public repo 不限分钟数（避免私有仓库 2000 分钟/月额度）
+#  · 触发：push main / tag v* / 手动 workflow_dispatch
+#  · 产物：build/openwrt-ramips-mt76x8-mibox_668m2-squashfs-sysupgrade.bin
+#          每次都上传 artifact；打 tag 时另外发 Release
+# ============================================================================
+name: Build FZS-S1 IMS Firmware
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      build_engine:
+        description: '用 Go 源码重新交叉编译 imsengine（默认用仓库内预编译二进制）'
+        required: false
+        default: '0'
+      extra_config:
+        description: '追加到 .config 的选项（多行用分号分隔）'
+        required: false
+        default: 'CONFIG_CCACHE=y'
+
+permissions:
+  contents: write
+
+# 同一分支只保留最新一次构建，避免并发抢 ccache
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    env:
+      # 用 ccache 复用编译结果，二次构建大幅提速
+      FZS_EXTRA_CONFIG: ${{ github.event.inputs.extra_config || 'CONFIG_CCACHE=y' }}
+      FZS_BUILD_ENGINE: ${{ github.event.inputs.build_engine || '0' }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 5G
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3-setuptools python3-dev \
+            rsync swig unzip zlib1g-dev file wget subversion qemu-utils ccache
+          sudo apt-get clean
+
+      - name: 准备 ccache
+        run: |
+          mkdir -p "$CCACHE_DIR"
+          ccache --set-config=max_size=5G
+          ccache --set-config=compiler_check=content
+          ccache -z
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('src/config.seed.v2', 'src/board-files/**', 'src/luci-app-fzs-files/**') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: 拉取 OpenWrt 源码 + feeds
+        run: bash build.sh clone
+
+      - name: 注入板级适配 + IMS 引擎 + 面板
+        run: bash build.sh inject
+
+      - name: 生成 .config
+        run: bash build.sh config
+
+      # build.sh 的 build 段 = make download + make -j$(nproc) + 收集产物到 build/
+      - name: 编译（耗时较长）
+        run: bash build.sh build
+
+      - name: 产物清单
+        run: ls -la build/
+
+      - name: ccache 统计
+        if: always()
+        run: ccache -s || true
+
+      - name: 上传固件（artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: mibox-668m2-sysupgrade
+          path: build/*.bin
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/*.bin
+            build/sha256sums
+          generate_release_notes: true

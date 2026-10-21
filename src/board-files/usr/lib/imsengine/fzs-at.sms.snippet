@@ -1,0 +1,13 @@
+	# [ims-bridge-sms] v5 IMS 通道（imsengine 的 SIP MESSAGE, 不经 AT+CMGS）
+	#   EC200T 固件不含 IMS/VoLTE 栈（AT+QCFG="ims" → +CME ERROR: 4），原生短信只能走 CS 域，
+	#   实测发信撞 CMS 304/500（面板报"被模组拒绝"）。故面板选 ims 或 模组1(EC200T) 一律转
+	#   imsengine submit（用户态 IMS）；模组2(EC200N) 固件自带 IMS 栈，保留原生 AT+CMGS。
+	case "$1" in ims|1)
+		# 保险：imsengine 没装/没启时回退原生 CS 域，而不是直接失败（有路可走胜过发不出）
+		if [ -x /etc/init.d/ims ]; then
+			/etc/init.d/ims submit "$2" "$3" || exit $?
+			printf '{"ok":true,"chunks":1}\n'
+			exit 0
+		fi ;;
+	esac
+	# [/ims-bridge-sms] 结束标记 —— patch-fzs 靠这对标记定位旧片段边界以便升级，勿删

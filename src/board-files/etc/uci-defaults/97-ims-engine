@@ -1,0 +1,12 @@
+#!/bin/sh
+# 97-ims-engine —— 固件内置 IMS 引擎后，首次启动启用服务
+#
+# 背景：opkg 装包时由 postinst 跑 `service enable`；但**固件内置**的文件不走 postinst，
+#       也就不会生成 /etc/rc.d/S95ims，开机不会自启。所以在这里补 enable。
+#       uci-defaults 脚本首次启动执行一次后会被自动删除，不会反复跑。
+[ -x /etc/init.d/ims ] && /etc/init.d/ims enable
+# 面板的短信守护同理（固件内置时 fzs-sms 的 postinst 也不会跑）
+[ -x /etc/init.d/fzs-sms ] && /etc/init.d/fzs-sms enable
+# 清掉 LuCI 菜单缓存，保证 IMS 卡片首次就能显示
+rm -f /tmp/luci-indexcache* 2>/dev/null
+exit 0

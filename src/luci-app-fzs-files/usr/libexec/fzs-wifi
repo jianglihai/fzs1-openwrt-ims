@@ -1,0 +1,183 @@
+#!/bin/sh
+# fzs-wifi —— 2.4G 无线发射功率（20 / 23 dBm）
+#
+# 背景：主线开源无线驱动默认遵守中国法规，把 2.4G 限在 20 dBm；本板硬件上限是 23 dBm（eeprom 决定）。
+#       把国家码换成 2.4G 上限足够高的域并指定 23 dBm，就能拿到那约 3 dB。
+#
+# 用法：
+#   fzs-wifi status    读状态（JSON）
+#   fzs-wifi on        开启（country=VE, txpower=23）
+#   fzs-wifi off       关闭还原（country=CN, txpower=20 = 固件出厂态）
+#
+# ★★ 三条设计红线（改之前先读懂）：
+#
+#   ① **只动 country 与 txpower，从不碰 channel / htmode。**
+#      本固件默认是 ch13 + HT40 + noscan=1（专门调过，为了 300 Mbps）；改成 ch11/HT20 会掉一半速率。
+#      而 VE 覆盖 ch1–13 ⇒ 用户原来的信道仍然合法、根本不用动，也就顺带绕开了
+#      "只换了国家码没换信道 ⇒ 热点直接消失"那个坑。（实测：自动信道下 VE 自选 ch9，HT40 正常。）
+#
+#   ② **`txpower` 必须与该国家码匹配地一起写。** 实测：`country=VE` 但 `txpower` 仍留着 20 ⇒ 功率就是 20
+#      （`txpower` 是硬上限，换域抬不动它）。所以开/关都是两个值一起写。
+#
+#   ③ **改完必须验证"接口真的起来了 + 功率真的到了新值"；不达标就还原。**
+#      `wifi reload` 是**异步**的：接口重建过程中会读到**中间态**（实测读到过假的 23 dBm，当时
+#      `Channel=unknown / HT Mode=NOHT`）。所以这里等"接口起来 + 连续两次读数一致"才判定，绝不看一次就下结论。
+#      网页上的用户多半正用无线连着面板，绝不能出现"点一下，热点没了"。
+#
+# 说明：本脚本**不写任何自有的持久化配置** —— "开没开"直接由 `country` 是不是 VE 推导（见 status），
+#       所以用户在 LuCI 里手动改过国家码，这里也能反映真实情况，不会出现状态错位。
+
+UCI=/sbin/uci
+WL=wireless
+
+ON_COUNTRY=VE
+ON_DBM=23
+OFF_COUNTRY=CN
+OFF_DBM=20
+
+MAX_TICKS=30      # 最多等 30 次
+TICK=3            # 每次 3 秒 ⇒ 最长约 90 秒
+
+DEV=""
+
+jstr() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"; }
+num() { printf '%s' "$1" | sed 's/\..*//' | tr -dc '0-9'; }
+
+# 2.4G 的 wifi-device 段名。段名不写死：22.03 / 23.05 以及将来改名都能用。
+wl_dev() {
+	local s
+	for s in $($UCI show $WL 2>/dev/null | sed -n 's/^wireless\.\([^.]*\)=wifi-device$/\1/p'); do
+		[ "$($UCI -q get $WL.$s.band)" = "2g" ] && { printf '%s' "$s"; return 0; }
+	done
+	# 没有 band 选项的老配置：退而用第一个 wifi-device
+	$UCI show $WL 2>/dev/null | sed -n 's/^wireless\.\([^.]*\)=wifi-device$/\1/p' | head -1
+}
+
+# 承载 AP 的接口名不写死（23.05 是 phy0-ap0，22.03 可能是 wlan0）
+ap_iface() {
+	iwinfo 2>/dev/null | sed -n 's/^\([A-Za-z0-9_.-]*\)[[:space:]][[:space:]]*ESSID.*/\1/p' | head -1
+}
+
+ap_up() {
+	local i
+	i=$(ap_iface)
+	[ -n "$i" ] || return 1
+	iwinfo "$i" info 2>/dev/null | grep -q 'ESSID'
+}
+
+# 实测功率（整数 dBm）。读不到就返回空。
+tx_dbm() {
+	local i v
+	i=$(ap_iface)
+	[ -n "$i" ] || return 0
+	v=$(iwinfo "$i" info 2>/dev/null | sed -n 's/.*Tx-Power: *\([0-9.]*\).*/\1/p' | head -1)
+	[ -n "$v" ] && num "$v"
+}
+
+# 等到"接口起来 + 连续两次读数一致"；最长 MAX_TICKS 次
+wait_stable() {
+	local i=0 prev="" cur="" same=0
+	while [ $i -lt $MAX_TICKS ]; do
+		sleep $TICK
+		i=$((i + 1))
+		if ! ap_up; then prev=""; same=0; continue; fi
+		cur=$(tx_dbm)
+		if [ -z "$cur" ]; then prev=""; same=0; continue; fi
+		if [ -n "$prev" ] && [ "$cur" = "$prev" ]; then same=$((same + 1)); else same=0; fi
+		prev="$cur"
+		[ $same -ge 1 ] && return 0
+	done
+	return 1
+}
+
+# 写两个值 + reload + 等稳定
+set_pair() {   # $1=country  $2=dbm
+	$UCI -q set $WL.$DEV.country="$1"
+	$UCI -q set $WL.$DEV.txpower="$2"
+	$UCI -q commit $WL
+	/sbin/wifi reload >/dev/null 2>&1
+	wait_stable
+}
+
+emit_status() {
+	local co tp dbm un=0
+	co=$($UCI -q get $WL.$DEV.country)
+	tp=$($UCI -q get $WL.$DEV.txpower)
+	dbm=$(tx_dbm)
+	[ "$co" = "$ON_COUNTRY" ] && un=1
+	printf '{"ok":true,"supported":true,"unlocked":%s,"country":%s,"txpower":%s,"dbm":%s,"on_dbm":%s,"off_dbm":%s,"iface":%s}\n' \
+		"$un" "$(jstr "$co")" "$(jstr "$tp")" "$(jstr "$dbm")" \
+		"$ON_DBM" "$OFF_DBM" "$(jstr "$(ap_iface)")"
+}
+
+err() { printf '{"ok":false,"err":%s}\n' "$(jstr "$1")"; }
+
+# 载入设备段；失败/无线被关则直接报错返回 1
+load_dev() {
+	DEV=$(wl_dev)
+	[ -n "$DEV" ] || { err '未检测到无线网卡'; return 1; }
+	[ "$($UCI -q get $WL.$DEV.disabled)" = "1" ] && { err '无线已关闭，请先到「网络 → 无线」把它打开'; return 1; }
+	return 0
+}
+
+cmd_status() {
+	DEV=$(wl_dev)
+	[ -n "$DEV" ] || { printf '{"ok":true,"supported":false}\n'; return 0; }
+	emit_status
+}
+
+cmd_on() {
+	local oc ot
+	load_dev || return 0
+
+	# 已经是目标状态就不折腾（避免没必要的无线重连）
+	if [ "$($UCI -q get $WL.$DEV.country)" = "$ON_COUNTRY" ] \
+	   && [ "$($UCI -q get $WL.$DEV.txpower)" = "$ON_DBM" ] \
+	   && [ "$(tx_dbm)" = "$ON_DBM" ]; then
+		emit_status
+		return 0
+	fi
+
+	oc=$($UCI -q get $WL.$DEV.country)
+	ot=$($UCI -q get $WL.$DEV.txpower)
+
+	set_pair "$ON_COUNTRY" "$ON_DBM"
+	if [ "$(tx_dbm)" = "$ON_DBM" ] && ap_up; then
+		emit_status
+		return 0
+	fi
+
+	set_pair "$oc" "$ot"          # 还原
+	err '开启后无线没起来，已还原原来的设置'
+}
+
+cmd_off() {
+	local oc ot
+	load_dev || return 0
+
+	if [ "$($UCI -q get $WL.$DEV.country)" = "$OFF_COUNTRY" ] \
+	   && [ "$($UCI -q get $WL.$DEV.txpower)" = "$OFF_DBM" ] \
+	   && [ "$(tx_dbm)" = "$OFF_DBM" ]; then
+		emit_status
+		return 0
+	fi
+
+	oc=$($UCI -q get $WL.$DEV.country)
+	ot=$($UCI -q get $WL.$DEV.txpower)
+
+	set_pair "$OFF_COUNTRY" "$OFF_DBM"
+	if [ "$(tx_dbm)" = "$OFF_DBM" ] && ap_up; then
+		emit_status
+		return 0
+	fi
+
+	set_pair "$oc" "$ot"          # 还原
+	err '关闭后无线没起来，已还原原来的设置'
+}
+
+case "$1" in
+	status) cmd_status ;;
+	on)     cmd_on ;;
+	off)    cmd_off ;;
+	*)      err '用法: fzs-wifi status|on|off' ;;
+esac

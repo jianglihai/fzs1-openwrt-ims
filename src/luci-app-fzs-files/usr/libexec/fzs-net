@@ -1,0 +1,260 @@
+#!/bin/sh
+# ============================================================================
+# 蜂助手面板 · 网络设置后端（「上网设置」页用）
+#
+# 只做三件事，全部落在设备上已有的成熟组件上，**不自己写路由逻辑**：
+#   ① 上网方式  → 改写 mwan3 的 member metric 与策略成员
+#   ② 双卡策略  → 同上（决定两个模组之间的先后）
+#   ③ 网口角色  → 改 network 的 switch_vlan ports
+#
+# ★ 红线（改这个脚本前先看）：
+#   1. **绝不动模组接口**（不 ifdown / 不碰 rndis-modemN 的网络配置）—— 短信要用；
+#   2. **不碰 `/etc/hotplug.d/iface/14-mifi-route`** —— 双模组同网关靠它把两条默认路由
+#      塞进主表，mwan3 才能各取一条；
+#   3. `mifi.power.enable` 由固件自己在开机时读，**本脚本不写它**。
+#
+# ★ 状态不另存文件，全部**从 uci 反推**（这样用户在 mwan3 页面自己改过也能正确显示）。
+#
+# 用法：
+#   fzs-net show
+#   fzs-net mode <only4g|4gfirst|wanfirst|onlywan>
+#   fzs-net sim  <balance|sim1|sim2>
+#   fzs-net port <left|mid|right|alllan>
+#
+# 输出：stdout 一律是**单行 JSON**；调用方只看 `ok`。
+# ============================================================================
+
+UCI=/sbin/uci
+UC="uci -q"
+SW=$(command -v swconfig 2>/dev/null || echo /sbin/swconfig)
+
+jesc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+fail() { printf '{"ok":false,"err":"%s"}\n' "$(jesc "$1")"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 读现状
+# ---------------------------------------------------------------------------
+
+# 端口角色：把 ports 里的 CPU 口(6t)去掉再排序，用"集合"比对，避免顺序不同就认不出
+norm_ports() {
+	printf '%s' "$1" | tr ' ' '\n' | grep -v '^6t$' | grep -v '^$' | sort -n | tr '\n' ' ' | sed -e 's/ *$//'
+}
+
+get_port() {
+	_p1=$(norm_ports "$($UC get network.@switch_vlan[0].ports)")
+	_p2=$(norm_ports "$($UC get network.@switch_vlan[1].ports)")
+	case "$_p1|$_p2" in
+	'2 4|1') echo left ;;
+	'1 4|2') echo mid ;;
+	'1 2|4') echo right ;;
+	'1 2 4|') echo alllan ;;
+	*) echo unknown ;;
+	esac
+}
+
+# 双卡策略：看两个模组成员的 metric 谁小（相等 = 负载均衡）
+get_sim() {
+	_m1=$($UC get mwan3.modem1_m1.metric); [ -n "$_m1" ] || _m1=1
+	_m2=$($UC get mwan3.modem2_m1.metric); [ -n "$_m2" ] || _m2=1
+	if [ "$_m1" = "$_m2" ]; then echo balance
+	elif [ "$_m1" -lt "$_m2" ]; then echo sim1
+	else echo sim2
+	fi
+}
+
+# 上网方式：从 mwan3 的策略成员 + wan 的启用状态反推
+get_mode() {
+	_mem="$($UC get mwan3.balanced.use_member)"
+	_wen=$($UC get mwan3.wan.enabled)
+	case "$_mem" in
+	*wan_m1*) _haswan=1 ;;
+	*) _haswan=0 ;;
+	esac
+	case "$_mem" in
+	*modem1_m1*|*modem2_m1*) _hasmodem=1 ;;
+	*) _hasmodem=0 ;;
+	esac
+	if [ "$_haswan" = 0 ] || [ "$_wen" != 1 ]; then
+		echo only4g
+	elif [ "$_hasmodem" = 0 ]; then
+		echo onlywan
+	else
+		_wm=$($UC get mwan3.wan_m1.metric); [ -n "$_wm" ] || _wm=1
+		_m1=$($UC get mwan3.modem1_m1.metric); [ -n "$_m1" ] || _m1=99
+		_m2=$($UC get mwan3.modem2_m1.metric); [ -n "$_m2" ] || _m2=99
+		[ "$_m1" -lt "$_m2" ] && _mm=$_m1 || _mm=$_m2
+		if [ "$_wm" -lt "$_mm" ]; then echo wanfirst; else echo 4gfirst; fi
+	fi
+}
+
+# 各芯片口的 link 状态（给页面显示"哪个口插了线"）。
+# 返回"当前有 link 的芯片口号"列表，形如： 2 4
+# swconfig 输出形如：
+#   Port 2:
+#       ...
+#       link: port:2 link:up speed:100baseT full-duplex
+get_links() {
+	$SW dev switch0 show 2>/dev/null | awk '
+		/^Port [0-9]+:/ { cur = $2; sub(":$", "", cur); next }
+		/link:/ { if (cur != "" && $0 ~ /link:up/) up[cur] = 1; cur = "" }
+		END { for (p in up) printf "%s ", p }
+	'
+}
+
+cmd_show() {
+	_up=" $(get_links) "
+	_lk=""
+	for _p in 1 2 4; do
+		case "$_up" in
+		*" $_p "*) _lk="$_lk\"$_p\":true," ;;
+		*) _lk="$_lk\"$_p\":false," ;;
+		esac
+	done
+	_lk=$(printf '%s' "$_lk" | sed -e 's/,$//')
+
+	_wen=$($UC get mifi.power.enable)
+	if [ "$_wen" = 0 ]; then _4g=false; else _4g=true; fi
+
+	printf '{"ok":true,"mode":"%s","sim":"%s","port":"%s","fourg":%s,"links":{%s}}\n' \
+		"$(get_mode)" "$(get_sim)" "$(get_port)" "$_4g" "$_lk"
+}
+
+# ---------------------------------------------------------------------------
+# 写：上网方式 + 双卡策略（一起算 metric，因为它们都落在 member metric 上）
+#
+#   metric 越小越优先。三个成员排一条总序，再按顺序发 1/2/3。
+#   双卡：balance = 两模组同 metric（等权 → 50/50）；sim1/sim2 = 谁小谁优先。
+#   上网方式：4gfirst = 模组在前；wanfirst = wan 在前；only4g / onlywan = 另一侧不参与策略。
+# ---------------------------------------------------------------------------
+apply_route() {
+	_mode=$1
+	_sim=$2
+
+	case "$_sim" in
+	balance) _m1=1; _m2=1 ;;
+	sim1) _m1=1; _m2=2 ;;
+	sim2) _m1=2; _m2=1 ;;
+	*) fail "未知的双卡策略: $_sim" ;;
+	esac
+
+	case "$_mode" in
+	onlywan) _w=1 ;;
+	wanfirst) _w=1 ;;
+	4gfirst) [ "$_sim" = balance ] && _w=2 || _w=3 ;;
+	only4g) _w="" ;;
+	*) fail "未知的上网方式: $_mode" ;;
+	esac
+
+	# wan 排在前面时，两个模组整体后移，保证 wan 的 metric 最小
+	if [ "$_w" = 1 ]; then _m1=$((_m1 + 1)); _m2=$((_m2 + 1)); fi
+
+	# --- 模组成员 ---
+	$UC get mwan3.modem1_m1 >/dev/null || { $UC set mwan3.modem1_m1=member; $UC set mwan3.modem1_m1.interface=modem1; }
+	$UC get mwan3.modem2_m1 >/dev/null || { $UC set mwan3.modem2_m1=member; $UC set mwan3.modem2_m1.interface=modem2; }
+	$UC set mwan3.modem1_m1.metric=$_m1
+	$UC set mwan3.modem2_m1.metric=$_m2
+	$UC set mwan3.modem1_m1.weight=1
+	$UC set mwan3.modem2_m1.weight=1
+
+	# --- wan 成员（要参与时才建；切回"仅用 4G"只停用、不删除）---
+	if [ -n "$_w" ]; then
+		if ! $UC get mwan3.wan >/dev/null; then
+			$UC set mwan3.wan=interface
+			$UC set mwan3.wan.family=ipv4
+			$UC add_list mwan3.wan.track_ip=223.5.5.5
+			$UC set mwan3.wan.reliability=1
+			$UC set mwan3.wan.count=1
+			$UC set mwan3.wan.timeout=4
+			$UC set mwan3.wan.interval=20
+			$UC set mwan3.wan.down=2
+			$UC set mwan3.wan.up=2
+		fi
+		$UC set mwan3.wan.enabled=1
+		if ! $UC get mwan3.wan_m1 >/dev/null; then
+			$UC set mwan3.wan_m1=member
+			$UC set mwan3.wan_m1.interface=wan
+			$UC set mwan3.wan_m1.weight=1
+		fi
+		$UC set mwan3.wan_m1.metric=$_w
+	else
+		# ★ 只停不删：避免反复建删写闪存，也保留用户自己在 mwan3 里加过的细化配置
+		$UC get mwan3.wan >/dev/null && $UC set mwan3.wan.enabled=0
+	fi
+
+	# --- 策略成员 ---
+	$UC delete mwan3.balanced.use_member
+	if [ "$_mode" != onlywan ]; then
+		$UC add_list mwan3.balanced.use_member=modem1_m1
+		$UC add_list mwan3.balanced.use_member=modem2_m1
+	fi
+	[ -n "$_w" ] && $UC add_list mwan3.balanced.use_member=wan_m1
+
+	$UC commit mwan3 || fail "写入 mwan3 配置失败"
+	# ★ 必须后台跑：mwan3 reload 要重启探测，实测阻塞约 30 秒；配置已经 commit，
+	#   这里等它只会让页面卡住。改用 & 让子进程脱离——脚本退出后由 init 收养继续跑完。
+	/etc/init.d/mwan3 reload >/dev/null 2>&1 &
+	return 0
+}
+
+cmd_mode() {
+	case "$1" in
+	only4g | 4gfirst | wanfirst | onlywan) ;;
+	*) fail "未知的上网方式: $1" ;;
+	esac
+	apply_route "$1" "$(get_sim)" || exit 1
+	printf '{"ok":true,"mode":"%s","sim":"%s"}\n' "$(get_mode)" "$(get_sim)"
+}
+
+cmd_sim() {
+	case "$1" in
+	balance | sim1 | sim2) ;;
+	*) fail "未知的双卡策略: $1" ;;
+	esac
+	apply_route "$(get_mode)" "$1" || exit 1
+	printf '{"ok":true,"mode":"%s","sim":"%s"}\n' "$(get_mode)" "$(get_sim)"
+}
+
+# 一次把上网方式和双卡都设好（只 reload 一次 mwan3）
+cmd_set() {
+	case "$1" in
+	only4g | 4gfirst | wanfirst | onlywan) ;;
+	*) fail "未知的上网方式: $1" ;;
+	esac
+	case "$2" in
+	balance | sim1 | sim2) ;;
+	*) fail "未知的双卡策略: $2" ;;
+	esac
+	apply_route "$1" "$2" || exit 1
+	printf '{"ok":true,"mode":"%s","sim":"%s"}\n' "$(get_mode)" "$(get_sim)"
+}
+
+# ---------------------------------------------------------------------------
+# 网口角色：改 switch_vlan。三个物理口 = 芯片 1(左) / 2(中) / 4(右)。
+# 两个 VLAN 都要保留 CPU 口 6t；"三个都当 LAN" 时 WAN 那个 VLAN 只留 CPU（无成员口）。
+# ---------------------------------------------------------------------------
+cmd_port() {
+	case "$1" in
+	left) _l1='2 4 6t'; _l2='1 6t' ;;
+	mid) _l1='1 4 6t'; _l2='2 6t' ;;
+	right) _l1='1 2 6t'; _l2='4 6t' ;;
+	alllan) _l1='1 2 4 6t'; _l2='6t' ;;
+	*) fail "未知的网口角色: $1" ;;
+	esac
+	$UC set network.@switch_vlan[0].ports="$_l1" || fail "写入端口配置失败"
+	$UC set network.@switch_vlan[1].ports="$_l2" || fail "写入端口配置失败"
+	$UC commit network || fail "提交 network 配置失败"
+	# ★ 同样后台跑：network reload 会重建 br-lan，期间本机会丢连接。
+	#   后台化之后 RPC 能在"断网之前"就把结果返回给页面。
+	/etc/init.d/network reload >/dev/null 2>&1 &
+	printf '{"ok":true,"port":"%s"}\n' "$(get_port)"
+}
+
+# ---------------------------------------------------------------------------
+case "$1" in
+show) cmd_show ;;
+mode) [ -n "$2" ] || fail "缺少参数"; cmd_mode "$2" ;;
+sim) [ -n "$2" ] || fail "缺少参数"; cmd_sim "$2" ;;
+set) [ -n "$3" ] || fail "缺少参数"; cmd_set "$2" "$3" ;;
+port) [ -n "$2" ] || fail "缺少参数"; cmd_port "$2" ;;
+*) fail "用法: fzs-net {show|mode <...>|sim <...>|set <方式> <双卡>|port <...>}" ;;
+esac

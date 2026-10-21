@@ -1,0 +1,68 @@
+{
+	"admin/services/fzs": {
+		"title": "蜂助手面板",
+		"order": 30,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-fzs" ]
+		}
+	},
+	"admin/services/fzs/overview": {
+		"title": "概览",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "fzs/overview"
+		}
+	},
+	"admin/services/fzs/net": {
+		"title": "网络设置",
+		"order": 15,
+		"action": {
+			"type": "view",
+			"path": "fzs/net"
+		}
+	},
+	"admin/services/fzs/band": {
+		"title": "锁频段",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "fzs/band"
+		}
+	},
+	"admin/services/fzs/cell": {
+		"title": "锁定频点/小区",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "fzs/cell"
+		}
+	},
+	"admin/services/fzs/imei": {
+		"title": "IMEI 改串",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "fzs/imei"
+		}
+	},
+	"admin/services/fzs/apn": {
+		"title": "APN 与数据开关",
+		"order": 50,
+		"action": {
+			"type": "view",
+			"path": "fzs/apn"
+		}
+	},
+	"admin/services/fzs/sms": {
+		"title": "短信中心",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "fzs/sms"
+		}
+	}
+}

@@ -1,0 +1,153 @@
+#!/bin/sh
+# fzs-fwd —— 短信转发执行器（守护进程与页面「发送测试」共用）
+# 用法: fzs-fwd <发件人> <时间> <正文>
+# 退出码: 0 = 至少一个渠道成功；1 = 未启用/未配置/全部失败
+#
+# ★ 2026-10-07 晚改版（渠道扩展）：
+#   国内推送渠道（钉钉/飞书/企微 群机器人）**都要求 POST + application/json**
+#   （各家官方文档写死的标准格式）。设备自带的 uclient-fetch 把 Content-Type
+#   写死成 urlencoded、发不了 JSON；改用 GNU wget（wget-ssl 包提供）——
+#   它支持 --header 自定义头。**已实测**（httpbin 回显 Content-Type 正确、
+#   服务端按 JSON 解析、中文无乱码）。
+#
+#   渠道清单与请求格式**照抄各家官方文档**，不做私有约定：
+#     企微·群机器人  https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=KEY
+#     钉钉·群机器人  https://oapi.dingtalk.com/robot/send?access_token=TOKEN
+#     飞书·群机器人  https://open.feishu.cn/open-apis/bot/v2/hook/XXX
+#     Telegram      https://<反代域名>/bot<TOKEN>/sendMessage
+#   JSON 的具体结构由 ucode 的 fwdbody 生成（shell 只负责发）。
+#
+#   依赖：wget-ssl（已写入 control 的 Depends，opkg 自动安装）。
+#   若用户环境确实没有 GNU wget，退回 uclient-fetch（部分渠道可能不通）。
+[ $# -ge 3 ] || exit 1
+
+fwd_enabled=0
+fwd_channels=''
+fwd_title='短信转发'
+fwd_token=''
+fwd_bark=''
+fwd_hook=''
+fwd_wecom=''
+fwd_ding_url=''
+fwd_ding_kw=''
+fwd_feishu=''
+fwd_tg_token=''
+fwd_tg_chat=''
+fwd_tg_host=''
+if [ -f /etc/config/fzs-sms ]; then
+	. /lib/functions.sh
+	config_load fzs-sms
+	config_get fwd_enabled globals fwd_enabled 0
+	config_get fwd_channels globals fwd_channels ''
+	config_get fwd_title globals fwd_title '短信转发'
+	config_get fwd_token globals fwd_pushplus_token ''
+	config_get fwd_bark globals fwd_bark_key ''
+	config_get fwd_hook globals fwd_webhook_url ''
+	config_get fwd_wecom globals fwd_wecom_webhook ''
+	config_get fwd_ding_url globals fwd_dingtalk_webhook ''
+	config_get fwd_ding_kw globals fwd_dingtalk_keyword ''
+	config_get fwd_feishu globals fwd_feishu_webhook ''
+	config_get fwd_tg_token globals fwd_tg_token ''
+	config_get fwd_tg_chat globals fwd_tg_chatid ''
+	config_get fwd_tg_host globals fwd_tg_apihost ''
+fi
+[ "$fwd_enabled" = "1" ] || exit 1
+[ -n "$fwd_channels" ] || exit 1
+
+_s="$1"; _t="$2"; _c="$3"
+_uc=/usr/libexec/fzs-sms.uc
+
+# 正文（部分渠道走 URL 参数，需要 urlencode；走 JSON 的由 fwdbody 转义）
+_body="$_s
+$_t
+$_c"
+_eb=$(UC_SUB=urlenc UC_ARG1="$_body" ucode "$_uc" 2>/dev/null)
+_et=$(UC_SUB=urlenc UC_ARG1="$fwd_title" ucode "$_uc" 2>/dev/null)
+
+# ★ 发送函数：优先 GNU wget（能设 Content-Type），退回 uclient-fetch。
+#   用法: post_json <url> <json>
+post_json() {
+	if command -v wget >/dev/null 2>&1 && wget --help 2>&1 | grep -q -- '--header'; then
+		wget -q -O - --timeout=20 \
+			--header='Content-Type: application/json' \
+			--post-data="$2" "$1" 2>/dev/null
+	else
+		# 退回：uclient-fetch（Content-Type 是 urlencoded，部分渠道可能拒收）
+		uclient-fetch -qO- --timeout=15 --post-data="$2" "$1" 2>/dev/null
+	fi
+}
+
+# 判定成功：HTTP 层由 post_json 保证（wget 失败会返回非 0），
+# 再叠加 body 里的业务字段判断。各家用词不同，逐个试。
+# 用法: is_ok <渠道> <响应体>  → 0=成功
+is_ok() {
+	case "$1" in
+	wecom-bot|wecom-app) case "$2" in *'"errcode":0'*) return 0 ;; esac ;;
+	dingtalk-bot)        case "$2" in *'"errcode":0'*) return 0 ;; esac ;;
+	feishu-bot)          case "$2" in *'"code":0'*|*'"StatusCode":0'*) return 0 ;; esac ;;
+	tg-bot)              case "$2" in *'"ok":true'*) return 0 ;; esac ;;
+	pushplus)            case "$2" in *'"code":200'*) return 0 ;; esac ;;
+	bark)                case "$2" in *'"code":200'*) return 0 ;; esac ;;
+	*)                   [ -n "$2" ] && return 0 ;;   # 通用 webhook：有响应即算通
+	esac
+	return 1
+}
+
+_ok=1
+for _ch in $(printf '%s' "$fwd_channels" | tr ',' ' '); do
+	case "$_ch" in
+	pushplus)
+		[ -n "$fwd_token" ] || continue
+		_r=$(uclient-fetch -qO- --timeout=15 "https://www.pushplus.plus/send?token=$fwd_token&title=$_et&content=$_eb&template=txt" 2>/dev/null)
+		is_ok pushplus "$_r" && _ok=0
+		;;
+	bark)
+		[ -n "$fwd_bark" ] || continue
+		_r=$(uclient-fetch -qO- --timeout=15 "https://api.day.app/$fwd_bark/$_et/$_eb" 2>/dev/null)
+		is_ok bark "$_r" && _ok=0
+		;;
+	webhook)
+		[ -n "$fwd_hook" ] || continue
+		_js=$(UC_SUB=fwdbody UC_ARG1=webhook UC_ARG2="$_s" UC_ARG3="$_t" UC_ARG4="$_c" ucode "$_uc" 2>/dev/null)
+		_r=$(post_json "$fwd_hook" "$_js")
+		is_ok webhook "$_r" && _ok=0
+		;;
+	wecom-bot)
+		[ -n "$fwd_wecom" ] || continue
+		_js=$(UC_SUB=fwdbody UC_ARG1=wecom-bot UC_ARG2="$_s" UC_ARG3="$_t" UC_ARG4="$_c" ucode "$_uc" 2>/dev/null)
+		_r=$(post_json "$fwd_wecom" "$_js")
+		is_ok wecom-bot "$_r" && _ok=0
+		;;
+	dingtalk-bot)
+		[ -n "$fwd_ding_url" ] || continue
+		# 钉钉「自定义关键词」安全设置：正文必须含该关键词，否则拒收。
+		# 用户在页面上填了关键词就拼到正文最前面（官方要求如此）。
+		_c2="$_c"
+		[ -n "$fwd_ding_kw" ] && _c2="$fwd_ding_kw
+$_c"
+		_js=$(UC_SUB=fwdbody UC_ARG1=dingtalk-bot UC_ARG2="$_s" UC_ARG3="$_t" UC_ARG4="$_c2" ucode "$_uc" 2>/dev/null)
+		_r=$(post_json "$fwd_ding_url" "$_js")
+		is_ok dingtalk-bot "$_r" && _ok=0
+		;;
+	feishu-bot)
+		[ -n "$fwd_feishu" ] || continue
+		_js=$(UC_SUB=fwdbody UC_ARG1=feishu-bot UC_ARG2="$_s" UC_ARG3="$_t" UC_ARG4="$_c" ucode "$_uc" 2>/dev/null)
+		_r=$(post_json "$fwd_feishu" "$_js")
+		is_ok feishu-bot "$_r" && _ok=0
+		;;
+	tg-bot)
+		[ -n "$fwd_tg_token" ] && [ -n "$fwd_tg_chat" ] || continue
+		_host="$fwd_tg_host"
+		[ -n "$_host" ] || _host='api.telegram.org'
+		# Telegram 需要 {"chat_id":"...","text":"..."}。
+		# 复用 fwdbody 生成 {"text":"<已转义正文>"}，再剥掉外层、套上 chat_id
+		# —— 这样转义逻辑只有一份（在 ucode 的 jesc 里），shell 不碰转义。
+		_txt=$(UC_SUB=fwdbody UC_ARG1=tg-bot UC_ARG2="$_s" UC_ARG3="$_t" UC_ARG4="$_c" ucode "$_uc" 2>/dev/null)
+		_inner=$(printf '%s' "$_txt" | sed 's/^{"text":"//; s/"}$//')
+		_js='{"chat_id":"'"$fwd_tg_chat"'","text":"'"$_inner"'"}'
+		_r=$(post_json "https://$_host/bot$fwd_tg_token/sendMessage" "$_js")
+		is_ok tg-bot "$_r" && _ok=0
+		;;
+	esac
+done
+exit $_ok

@@ -1,0 +1,80 @@
+{
+  "_comment": "移动注册参数 = SimAdmin VoLTE 版逆向对齐（2026-10-07 实测有应答）；P-CSCF 兜底为现网学习验证地址，地址表主体走外挂学习 pcscf_learned.json。",
+  "name": "移动",
+  "imsi_prefix": "46000",
+  "verified": true,
+  "domain": "ims.mnc000.mcc460.3gppnetwork.org",
+  "impu_style": "msisdn",
+  "transport": "tcp",
+  "pcscf_fallback": [
+    "2409:805a:5002:52f8::7:a04",
+    "2409:805a:5002:52a8::7:1802"
+  ],
+  "pcscf_port": 5060,
+  "smsc_psi": "tel:+8613800100500",
+  "ipsmgw_fallback": "",
+  "auth": {
+    "algo": "AKAv1-MD5",
+    "aid": null
+  },
+  "ipsec": {
+    "alg": "hmac-md5-96",
+    "ealg": "null",
+    "spi_c": 23456789,
+    "spi_s": 12345678,
+    "ue_port_tx": 2468,
+    "ue_port_rx": 1357,
+    "port_c_lo": 40000,
+    "port_c_hi": 60000,
+    "server_port": 5062,
+    "sec_agree": true,
+    "sec_client": "ipsec-3gpp;prot=esp;mod=trans;spi-c={spi_c};spi-s={spi_s};port-c={port_c};port-s={port_s};alg=hmac-md5-96;ealg=null",
+    "random_spi": true
+  },
+  "headers": {
+    "supported": "path, sec-agree",
+    "contact_tags": ";+g.3gpp.accesstype=\"3GPP-E-UTRAN-FDD\";+g.3gpp.smsip",
+    "qop_auth": true,
+    "subscribe_reg": true,
+    "accept_contact": "",
+    "send_supported": "path, gruu, sec-agree",
+    "pani": "3GPP-E-UTRAN-FDD",
+    "p_preferred_identity": "auto"
+  },
+  "registration": {
+    "expires": 3600,
+    "renew_after_min": 30,
+    "renew_transport": "udp",
+    "renew_sec_verify": false,
+    "renew_noauth": false,
+    "renew_sec_client": false,
+    "retry_min_ms": 600000,
+    "noresp_retry_ms": 60000,
+    "noresp_streak_limit": 5,
+    "reg_timeout_ms": 240000,
+    "renew_integrity": true,
+    "contact_expires": 3600
+  },
+  "keepalive": {
+    "options_interval_ms": 60000,
+    "watchdog_ms": 30000,
+    "silence_limit_ms": 90000
+  },
+  "media": {
+    "rtp_port": 40000,
+    "codec_pref": [
+      "AMR-WB",
+      "AMR",
+      "PCMU",
+      "PCMA"
+    ],
+    "auto_answer_after_s": -1
+  },
+  "imsi_prefixes": [
+    "46000",
+    "46002",
+    "46004",
+    "46007",
+    "46008"
+  ]
+}
