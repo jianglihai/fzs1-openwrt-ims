@@ -5,15 +5,21 @@
  * 硬件：MediaTek MT7628DAN + 2x Quectel EC200（EC200T CAT4 / EC200N CAT1）
  *       16MB SPI-NOR flash（XM25QH128A，128Mbit）/ 64MB DDR2
  *
- * ★★ flash 容量（2026-10-22 由真机核实，勿改回）★★
- *   实测：spi-nor spi0.0: XM25QH128A (16384 Kbytes)
- *   社区固件实际生效的分区：mtd3 firmware = 0x00fb0000（15.68MB）
- *   曾经照抄 WRTnode 2P 模板写成 0x01fb0000（31.6MB），那是 32MB flash 的板子。
- *   分区超出物理容量会导致 ofpart 注册失败 → 无 kernel/rootfs mtd → 起不来。
+ * ★★ flash 容量 = 16MiB（2026-10-22 真机四重核实，勿改回）★★
  *
- * 来源说明：
- *   本文件以 OpenWrt 官方主线 target/linux/ramips/dts/mt7628an_wrtnode_wrtnode2.dtsi
- *   为骨架（GPIO / LED / 分区风格沿用），分区尺寸已按本板实测修正。
+ *   证据 1 芯片型号：dmesg -> spi-nor spi0.0: XM25QH128A (16384 Kbytes)
+ *                   XMC XM25QH128A = 128Mbit = 16,384KB（原厂 datasheet）
+ *   证据 2 内核截断：同一份 DTB 若写 0x1fb0000(31.6MB)，内核打印
+ *                   "partition firmware extends beyond the end of device
+ *                    -- size truncated to 0xfb0000"
+ *                   截断值必然是「物理容量 - 起始地址」，即 容量 - 0x50000 = 0xfb0000
+ *                   => 容量 = 0x1000000 = 16MiB。若真是 8MiB，截断值会是 0x7b0000。
+ *   证据 3 分区求和：u-boot 0x30000 + env 0x10000 + factory 0x10000
+ *                   + firmware 0xfb0000 = 0x1000000 = 16MiB，分毫不差
+ *   证据 4 sysfs  ：/sys/class/mtd/mtd3/size = 16449536 = 15.68MiB（减去前述头部）
+ *
+ *   曾经照抄 WRTnode 2P 模板写成 0x1fb0000（那是 32MB flash 的板子），
+ *   且注释里还写着错的 "8MB"。两者自相矛盾，说明当时根本没验证过。
  *
  *   分区布局（0x50000 + 0xfb0000 = 0x1000000 = 16MiB，与 flash 物理容量封顶）：
  *     u-boot      @ 0x000000  0x030000  read-only
