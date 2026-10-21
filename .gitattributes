@@ -2,3 +2,4 @@
 *.bin binary
 *.ipk binary
 src/board-files/usr/bin/imsengine binary
+src/luci-app-fzs-files/usr/bin/fzs-atio binary

@@ -5,7 +5,9 @@
 
 # ---- 编译产物（固件走 GitHub Releases，不进源码仓） ----
 build/
-bin/
+# 锚定到仓库根：写成 bin/ 会连 src/luci-app-fzs-files/usr/bin/ 一起忽略
+# （2026-10-22 事故：面板的 fzs-atio 就这么丢了，CI 编出的固件不能发短信）
+/bin/
 out/
 *.bin
 *.sqsh

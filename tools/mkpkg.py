@@ -332,9 +332,11 @@ def collect_panel():
         for fn in files:
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, PANEL).replace("\\", "/")
-            # 可执行：init.d 与 libexec 下的脚本 / 二进制
+            # 可执行：init.d 与 libexec 下的脚本 / 二进制，以及 usr/bin 下的程序
+            # （usr/bin/fzs-atio 是 ELF，漏给执行位会导致面板 AT 桥接起不来）
             mode = 0o755 if (rel.startswith("etc/init.d/") or
-                             rel.startswith("usr/libexec/")) else 0o644
+                             rel.startswith("usr/libexec/") or
+                             rel.startswith("usr/bin/")) else 0o644
             with open(full, "rb") as f:
                 m["./" + rel] = (mode, f.read())
     return m
