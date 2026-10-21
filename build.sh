@@ -86,7 +86,10 @@ define Device/mibox_668m2
       kmod-usb-serial-option kmod-i2c-mt7628 i2c-tools \
       kmod-mt76 kmod-mt7603
   SUPPORTED_DEVICES += mibox,668m2
-  IMAGE_SIZE := 16128k
+  # 16MiB flash：firmware 分区 @0x50000 尺寸 0xfb0000 = 16060KiB
+  # 不得再放大（曾误抄 32MB 模板写成 16128k，超出分区 → 编译时 bin 过大
+  # 且运行时 mtd 写入会顶坏相邻空间）
+  IMAGE_SIZE := 16060k
 endef
 TARGET_DEVICES += mibox_668m2
 EOF

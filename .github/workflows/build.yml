@@ -89,6 +89,31 @@ jobs:
       - name: 产物清单
         run: ls -la build/
 
+      # 安全保障：本板 flash 是 16MiB，firmware 分区 15.68MB。
+      # 万一 .config 塞进过多包导致 bin 顶到分区边界，宁可让 CI 红，也不能出能刷砖的固件。
+      - name: 固件尺寸安全校验（16MiB flash）
+        run: |
+          python3 - <<'PY'
+          import glob, os, sys
+          LIMIT = 15 * 1024 * 1024          # 15MiB，留 ~0.68MB 给 overlay 与对齐
+          bins = glob.glob("build/*.bin")
+          assert bins, "没有找到固件文件"
+          bad = []
+          for p in bins:
+              sz = os.path.getsize(p)
+              flag = "OK " if sz < LIMIT else "OVER"
+              print("%s %-10d %s" % (flag, sz, p))
+              if sz >= LIMIT:
+                  bad.append(p)
+          if bad:
+              print("固件超过 %d 字节上限，疑似分区配置有误或被塞入过多包" % LIMIT, file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      # ipk + 系统恢复包（不依赖交叉编译产物，纯打包 src/ 下的文件）
+      - name: 打包 IMS 组件（ipk + 恢复包）
+        run: python3 tools/mkpkg.py
+
       - name: ccache 统计
         if: always()
         run: ccache -s || true
@@ -101,6 +126,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: 上传 IMS 组件（ipk + 恢复包，artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: fzs-ims-packages
+          path: build/packages/*
+          if-no-files-found: error
+          retention-days: 30
+
       - name: 发布 Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -108,4 +141,7 @@ jobs:
           files: |
             build/*.bin
             build/sha256sums
+            build/packages/*.ipk
+            build/packages/*.tar.gz
+            build/packages/sha256sums
           generate_release_notes: true

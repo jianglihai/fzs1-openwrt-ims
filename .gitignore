@@ -56,10 +56,11 @@ key_rsa*
 _*.txt
 
 # ---- tools/：内部调试脚本一律不进；只白名单少量对外构建脚本 ----
-tools/
+tools/*
 !tools/setup_ubuntu_deps.sh
 !tools/build_openwrt.sh
 !tools/patch_board_files.sh
+!tools/mkpkg.py
 !tools/wslconfig.txt
 
 
