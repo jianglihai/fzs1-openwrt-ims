@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.bin binary
+*.ipk binary
+src/board-files/usr/bin/imsengine binary
