@@ -69,3 +69,7 @@ tools/*
 # ---- IMS 内置引擎：二进制必须入库（父级 bin/ 被忽略，这里放行）----
 !src/board-files/usr/bin/
 !src/board-files/usr/bin/imsengine
+
+# Python 缓存
+__pycache__/
+*.pyc

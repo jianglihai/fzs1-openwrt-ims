@@ -69,7 +69,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ runner.os }}-${{ hashFiles('src/config.seed.v2', 'src/board-files/**', 'src/luci-app-fzs-files/**') }}
+          # 面板源码已不在此仓（取自 fzs1-panel Release），故不要把已删除的
+          # src/luci-app-fzs-files/** 列进来 —— 换成 build.sh，它内含 PANEL_VER，
+          # 面板版本一变 key 就变，缓存随之失效，不会用旧缓存配新面板。
+          key: ccache-${{ runner.os }}-${{ hashFiles('src/config.seed.v2', 'src/board-files/**', 'build.sh', 'src/mt7628an_mibox_668m2.dts') }}
           restore-keys: |
             ccache-${{ runner.os }}-
 
