@@ -64,6 +64,25 @@ clone(){
     log "更新 feeds"
     ./scripts/feeds update -a
     ./scripts/feeds install -a
+
+    # 第三方包：Argon 主题不在官方 luci feed 中（官方只有 bootstrap）。
+    # 若不在此处 clone，CONFIG_PACKAGE_luci-theme-argon=y 会在 defconfig 时被静默丢弃，
+    # 结果 uci 里指向 /luci-static/argon 而资源不存在，LuCI 只能回退 bootstrap-dark
+    # —— 界面就是一副"毛坯"样子（2026-10-22 实测）。
+    clone_third() {
+        local name="$1" repo="$2" dest="$SRC/package/$1"
+        if [ -d "$dest/.git" ]; then
+            ( cd "$dest" && git pull --ff-only -q ) 2>/dev/null || true
+        else
+            rm -rf "$dest"
+            git clone --depth 1 -q "$repo" "$dest" || echo "警告：$name 拉取失败（界面将退回 bootstrap）"
+        fi
+    }
+    if [ "${FZS_NO_ARGON:-0}" != "1" ]; then
+        log "拉取 Argon 主题（第三方）"
+        clone_third luci-theme-argon     https://github.com/jerrykuku/luci-theme-argon.git
+        clone_third luci-app-argon-config https://github.com/jerrykuku/luci-app-argon-config.git
+    fi
 }
 
 # ---------------------------------------------------------------------------

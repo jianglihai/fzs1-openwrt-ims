@@ -35,6 +35,20 @@ uci -q set argon.@global[0].transparency='0.5'
 uci -q set argon.@global[0].transparency_dark='0.5'
 uci -q commit argon 2>/dev/null
 
+# ---- 2.5 打开 192.168.1.1 直接进入蜂助手面板 ----
+# 原生 /www/index.html 只跳 /cgi-bin/luci（原生状态页），用户每次都要自己去
+# 「服务」里翻蜂助手面板。这里直指面板概览页；未登录时 LuCI 会先走登录再跳回。
+cat > /www/index.html <<'HTML' 2>/dev/null
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="refresh" content="0; URL=/cgi-bin/luci/admin/fzs/overview" />
+</head>
+<body></body>
+</html>
+HTML
+
 # ---- 3. ttyd 配置预置（供用户后装 ttyd 时直接可用；固件不预装 ttyd）----
 # 背景：v4 起不再预装 ttyd/luci-app-ttyd（省 ≈0.46MiB + 切断 libopenssl）。
 #       但这里仍把 /etc/config/ttyd 的正确值写好 —— 该文件是 opkg conffile，

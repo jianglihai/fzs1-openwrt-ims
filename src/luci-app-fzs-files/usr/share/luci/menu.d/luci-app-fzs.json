@@ -1,15 +1,17 @@
 {
-	"admin/services/fzs": {
+	"admin/fzs": {
 		"title": "蜂助手面板",
-		"order": 30,
+		"order": 5,
 		"action": {
 			"type": "firstchild"
 		},
 		"depends": {
-			"acl": [ "luci-app-fzs" ]
+			"acl": [
+				"luci-app-fzs"
+			]
 		}
 	},
-	"admin/services/fzs/overview": {
+	"admin/fzs/overview": {
 		"title": "概览",
 		"order": 10,
 		"action": {
@@ -17,7 +19,7 @@
 			"path": "fzs/overview"
 		}
 	},
-	"admin/services/fzs/net": {
+	"admin/fzs/net": {
 		"title": "网络设置",
 		"order": 15,
 		"action": {
@@ -25,7 +27,7 @@
 			"path": "fzs/net"
 		}
 	},
-	"admin/services/fzs/band": {
+	"admin/fzs/band": {
 		"title": "锁频段",
 		"order": 20,
 		"action": {
@@ -33,7 +35,7 @@
 			"path": "fzs/band"
 		}
 	},
-	"admin/services/fzs/cell": {
+	"admin/fzs/cell": {
 		"title": "锁定频点/小区",
 		"order": 30,
 		"action": {
@@ -41,7 +43,7 @@
 			"path": "fzs/cell"
 		}
 	},
-	"admin/services/fzs/imei": {
+	"admin/fzs/imei": {
 		"title": "IMEI 改串",
 		"order": 40,
 		"action": {
@@ -49,7 +51,7 @@
 			"path": "fzs/imei"
 		}
 	},
-	"admin/services/fzs/apn": {
+	"admin/fzs/apn": {
 		"title": "APN 与数据开关",
 		"order": 50,
 		"action": {
@@ -57,7 +59,7 @@
 			"path": "fzs/apn"
 		}
 	},
-	"admin/services/fzs/sms": {
+	"admin/fzs/sms": {
 		"title": "短信中心",
 		"order": 60,
 		"action": {
