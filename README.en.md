@@ -8,6 +8,12 @@ This is the PUBLIC readme (GitHub landing page), written for end users who want 
 
 # FZS S1 OpenWrt Firmware · fzs1-openwrt
 
+> 📌 **This is a derivative work.** The board adaptation, dual-modem support and panel UI all come
+> from the original author [@zzt718](https://github.com/zzt718)
+> ([fzs1-openwrt](https://github.com/zzt718/fzs1-openwrt),
+> [fzs1-panel](https://github.com/zzt718/fzs1-panel), all GPL-3.0). Please star **his** repositories.
+> This fork's own additions are listed in [Origin & Credits](#origin--credits-this-is-a-derivative-work-not-an-original-one).
+
 > **Custom-built OpenWrt firmware for the "蜂助手 S1" (MIBOX-668M2) dual-modem 4G CPE —
 > dual-modem 4G internet + a Chinese cellular-management panel, all in one flash.**
 > Based on OpenWrt 23.05 (kernel 5.15). Verified: dual Quectel EC200 modems over RNDIS, mwan3 load balancing, ready-to-use Chinese panel.
@@ -198,11 +204,38 @@ A: Yes. It's standard OpenWrt 23.05 — `opkg update && opkg install <pkg>` (nee
 **Q: Why flash with `-n` (wipe config)?**
 A: Across versions/large changes, old config may be incompatible; `-n` is safest.
 
+## Origin & Credits (**this is a derivative work, not an original one**)
+
+**This project did not start from scratch.** Its core work — board adaptation of the
+蜂助手 S1 (MIBOX-668M2), the device tree, dual EC200 modem RNDIS, `mwan3` balancing,
+and the Chinese management panel UI — **all comes from the original author
+[@zzt718](https://github.com/zzt718)**. This repository merely adds a few fixes on top.
+**All foundational credit belongs to the original author.**
+
+| Part | Original repository | License |
+| --- | --- | --- |
+| **Firmware & board adaptation** (source of this fork) | [**zzt718/fzs1-openwrt**](https://github.com/zzt718/fzs1-openwrt) | GPL-3.0 |
+| **Panel `luci-app-fzs`** (source code & UI design) | [**zzt718/fzs1-panel**](https://github.com/zzt718/fzs1-panel) | GPL-3.0 |
+| **De-clouding** | [**zzt718/fzs1-decloud**](https://github.com/zzt718/fzs1-decloud) | GPL-3.0 |
+
+> 🙏 **Heartfelt thanks to [@zzt718](https://github.com/zzt718)** for the hard work and selfless
+> contributions behind this project. If you find it useful, please star his repositories —
+> **the stars here are only an echo of theirs.**
+
+See the Chinese README section [原作出处与鸣谢](../README.md#原作出处与鸣谢本项目是衍生作品非原创)
+for what this fork adds on top (OpenWrt 23.05 base, IMS engine, rpcd panel fix, 16 MiB flash
+partition correction, build-chain artifacts). Any bugs in those additions belong to **this**
+repository — please do not report them upstream.
+
 ## Credits
 
-- The **OpenWrt** project and the `ramips/mt76x8` community;
-- The **community firmware author** — this project's board adaptation (dual-modem RNDIS, mwan3, I2C power-up) builds on their prior work;
-- The **fzs1-panel** (sister project) author — the Chinese management panel.
+- **[@zzt718](https://github.com/zzt718) (original author of this project)** — board adaptation,
+  device tree, dual-modem RNDIS, mwan3, I2C power-up, and the entire panel source & UI design
+  are his work. See [Origin & Credits](#origin--credits-this-is-a-derivative-work-not-an-original-one) above.
+- The **OpenWrt** project and the `ramips/mt76x8` community — a stable and reliable base.
+- **Quectel** — AT command documentation and modem firmware references.
+
+> **Reminder**: most of this repository's code was not written here. Please save your stars for the original author.
 
 ## Disclaimer
 
