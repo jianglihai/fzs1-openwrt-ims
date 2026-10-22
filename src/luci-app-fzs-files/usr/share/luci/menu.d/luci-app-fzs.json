@@ -1,7 +1,7 @@
 {
-	"admin/fzs": {
+	"admin/services/fzs": {
 		"title": "蜂助手面板",
-		"order": 5,
+		"order": 30,
 		"action": {
 			"type": "firstchild"
 		},
@@ -11,7 +11,7 @@
 			]
 		}
 	},
-	"admin/fzs/overview": {
+	"admin/services/fzs/overview": {
 		"title": "概览",
 		"order": 10,
 		"action": {
@@ -19,7 +19,7 @@
 			"path": "fzs/overview"
 		}
 	},
-	"admin/fzs/net": {
+	"admin/services/fzs/net": {
 		"title": "网络设置",
 		"order": 15,
 		"action": {
@@ -27,7 +27,7 @@
 			"path": "fzs/net"
 		}
 	},
-	"admin/fzs/band": {
+	"admin/services/fzs/band": {
 		"title": "锁频段",
 		"order": 20,
 		"action": {
@@ -35,7 +35,7 @@
 			"path": "fzs/band"
 		}
 	},
-	"admin/fzs/cell": {
+	"admin/services/fzs/cell": {
 		"title": "锁定频点/小区",
 		"order": 30,
 		"action": {
@@ -43,7 +43,7 @@
 			"path": "fzs/cell"
 		}
 	},
-	"admin/fzs/imei": {
+	"admin/services/fzs/imei": {
 		"title": "IMEI 改串",
 		"order": 40,
 		"action": {
@@ -51,7 +51,7 @@
 			"path": "fzs/imei"
 		}
 	},
-	"admin/fzs/apn": {
+	"admin/services/fzs/apn": {
 		"title": "APN 与数据开关",
 		"order": 50,
 		"action": {
@@ -59,7 +59,7 @@
 			"path": "fzs/apn"
 		}
 	},
-	"admin/fzs/sms": {
+	"admin/services/fzs/sms": {
 		"title": "短信中心",
 		"order": 60,
 		"action": {
