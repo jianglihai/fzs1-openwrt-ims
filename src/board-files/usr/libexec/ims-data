@@ -58,6 +58,44 @@ data_cid() {
 		| awk '{ if (tolower($2) !~ /ims/) { print $1; exit } }'
 }
 
+# apn_for_imsi <imsi> —— 按 IMSI 前 5 位（MCC+MNC）给三大运营商的通用 APN。
+#   APN 必须跟着卡走：实测一张联通卡插进来，模组 NVRAM 里残留的却是电信的 ctnet，
+#   mifi 的 apn=auto 候选在 EC200N 上没落下去，结果绑了 CID 也照样上不了网。
+#   换卡（换运营商）时若沿用旧 APN，数据承载会一直起不来。
+apn_for_imsi() {
+	case "${1%${1#?????}}" in
+		46000|46002|46004|46007|46008) echo cmnet ;;   # 中国移动
+		46001|46006|46009|46010)      echo 3gnet ;;   # 中国联通
+		46003|46005|46011|46012)      echo ctnet ;;   # 中国电信
+		*) return 1 ;;                                 # 境外 / 未知：不干预
+	esac
+}
+
+# ensure_apn <口> <cid> —— APN 与卡不符就改掉，并激活数据承载
+ensure_apn() {
+	local PORT="$1" CID="$2" IMSI="" APN="" CUR=""
+	IMSI=$(at "$PORT" 'AT+CIMI' 2>/dev/null \
+		| sed -n 's/^\([0-9]\{15\}\)[[:space:]]*$/\1/p' | head -1)
+	[ -n "$IMSI" ] || return 0
+	APN=$(apn_for_imsi "$IMSI") || return 0
+
+	CUR=$(at "$PORT" 'AT+CGDCONT?' 2>/dev/null \
+		| sed -n "s/^+CGDCONT: $CID,\"[^\"]*\",\"\([^\"]*\)\".*/\1/p" | head -1)
+	if [ "$CUR" != "$APN" ]; then
+		log "APN ${CUR:-空} 与卡不符（IMSI ${IMSI%${IMSI#?????}}xx）→ 改为 $APN"
+		at "$PORT" "AT+CGDCONT=$CID,\"IP\",\"$APN\"" >/dev/null 2>&1
+		at "$PORT" "AT+QIDEACT=$CID" >/dev/null 2>&1
+		sleep 2
+	fi
+
+	# QIACT? 项形如 +QIACT: <cid>,<state>,<type>,<ip>
+	if ! at "$PORT" 'AT+QIACT?' 2>/dev/null | grep -q "^+QIACT: $CID,1,"; then
+		at "$PORT" "AT+QIACT=$CID" >/dev/null 2>&1
+		log "激活数据承载 CID$CID（APN $APN）"
+		sleep 2
+	fi
+}
+
 # ensure_route <网卡> —— default 只指向它
 ensure_route() {
 	local ifc="$1" gw cur d
@@ -145,6 +183,9 @@ while :; do
 		sleep 20
 		continue
 	fi
+
+	# APN 跟着卡走 + 激活承载（必须先于绑 QNETDEVCTL，否则绑了也是空管道）
+	ensure_apn "$PORT" "$CID"
 
 	# 未绑则绑（QNETDEVCTL=1,<cid>,1 = 数据承载）
 	if ! at "$PORT" 'AT+QNETDEVCTL?' 2>/dev/null | grep -q "^+QNETDEVCTL: 1,$CID,"; then

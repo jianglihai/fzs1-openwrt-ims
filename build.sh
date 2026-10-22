@@ -118,6 +118,27 @@ EOF
         echo "面板内容：来自 $(basename "$ipk")（$(find package/luci-app-fzs/files -type f | wc -l) 个文件）"
     fi
 
+    # 5) ★ 强制执行位 —— 本仓在 Windows 上维护，git 不记录可执行位
+    #    （core.filemode=false），提交时脚本一律退化成 100644。
+    #    后果（2026-10-22 事故）：CI 在 Linux 检出后 /etc/init.d/ims、
+    #    /usr/bin/imsengine、/usr/libexec/ims-data 全都不可执行，
+    #    刷进真机后 IMS 服务起不来、没有默认路由、上不了网。
+    #    这里按目录统一补，不再依赖提交者记得 chmod。
+    for d in \
+        target/linux/ramips/mt76x8/base-files/etc/init.d \
+        target/linux/ramips/mt76x8/base-files/etc/uci-defaults \
+        target/linux/ramips/mt76x8/base-files/etc/chatscripts \
+        target/linux/ramips/mt76x8/base-files/usr/bin \
+        target/linux/ramips/mt76x8/base-files/usr/libexec \
+        target/linux/ramips/mt76x8/base-files/usr/lib/imsengine \
+        package/luci-app-fzs/files/etc/init.d \
+        package/luci-app-fzs/files/usr/bin \
+        package/luci-app-fzs/files/usr/libexec
+    do
+        [ -d "$d" ] && find "$d" -type f -exec chmod 755 {} + 2>/dev/null
+    done
+    echo "执行位已按目录统一补齐（防御 Windows 提交丢失 mode）"
+
     echo "注入完成。src/board-files → target/.../base-files；src/luci-app-fzs.Makefile → package/luci-app-fzs/"
 }
 
