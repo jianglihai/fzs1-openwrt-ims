@@ -32,11 +32,12 @@ import tarfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BOARD = os.path.join(ROOT, "src", "board-files")
-PANEL = os.path.join(ROOT, "src", "luci-app-fzs-files")
 OUT = os.environ.get("FZS_PKG_OUT", os.path.join(ROOT, "build", "packages"))
 
+# IMS 引擎随本仓维护；面板取自独立项目 fzs1-panel 的 Release（不在此仓存源码副本）
 ENGINE_VER, ENGINE_REL, ENGINE_ARCH = "0.1.7", "1", "mipsel_24kc"
-PANEL_VER, PANEL_REL, PANEL_ARCH = "0.3.1", "1", "all"
+PANEL_VER, PANEL_REL, PANEL_ARCH = "0.3.2", "1", "all"
+PANEL_REPO = os.environ.get("FZS_PANEL_REPO", "jianglihai/fzs1-panel")
 SUITE_VER = ENGINE_VER
 
 # ---------------------------------------------------------------------------
@@ -326,19 +327,65 @@ def collect_engine():
     return m
 
 
+def fetch_panel_ipk():
+    """取面板 ipk：本地文件优先（FZS_PANEL_IPK），否则从面板项目 Release 下载。
+
+    ★ 面板源码不在这个仓库 —— 真源是独立的 fzs1-panel 项目，本仓只消费它发布的
+      ipk（README「从源码构建」如此约定）。曾经在 src/luci-app-fzs-files/ 放过一份
+      源码副本，导致面板源码两处分叉、版本对不上难排查，已移除；此处也因此必须
+      保留 os.walk 之外的一条取材路径。
+    """
+    local = os.environ.get("FZS_PANEL_IPK", "")
+    if local and os.path.isfile(local):
+        print("[mkpkg] 面板来源：本地 %s" % local)
+        with open(local, "rb") as f:
+            return f.read()
+
+    ver_full = "%s-%s" % (PANEL_VER, PANEL_REL)
+    url = os.environ.get("FZS_PANEL_URL") or (
+        "https://github.com/%s/releases/download/v%s/luci-app-fzs_%s_%s.ipk"
+        % (PANEL_REPO, ver_full, ver_full, PANEL_ARCH))
+    dst = os.path.join(OUT, "luci-app-fzs_%s_%s.ipk" % (ver_full, PANEL_ARCH))
+    if os.path.isfile(dst) and os.path.getsize(dst) > 0:
+        print("[mkpkg] 面板来源：缓存 %s" % os.path.basename(dst))
+        with open(dst, "rb") as f:
+            return f.read()
+
+    print("[mkpkg] 面板来源：下载 %s" % url)
+    os.makedirs(OUT, exist_ok=True)
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=120) as r:
+            blob = r.read()
+        with open(dst, "wb") as f:
+            f.write(blob)
+        return blob
+    except Exception as e:  # noqa: BLE001 - 下载失败必须早失败，不能产出空面板包
+        sys.exit("[mkpkg] 面板 ipk 获取失败：%s\n"
+                 "        可设 FZS_PANEL_IPK=/path/to/luci-app-fzs_x.y.z_all.ipk 指定本地文件" % e)
+
+
 def collect_panel():
+    """从面板 ipk 的 data.tar.gz 取材，沿用包内的权限位（上游已按 755/644 归类）。"""
     m = {}
-    for dirpath, _, files in os.walk(PANEL):
-        for fn in files:
-            full = os.path.join(dirpath, fn)
-            rel = os.path.relpath(full, PANEL).replace("\\", "/")
-            # 可执行：init.d 与 libexec 下的脚本 / 二进制，以及 usr/bin 下的程序
-            # （usr/bin/fzs-atio 是 ELF，漏给执行位会导致面板 AT 桥接起不来）
-            mode = 0o755 if (rel.startswith("etc/init.d/") or
-                             rel.startswith("usr/libexec/") or
-                             rel.startswith("usr/bin/")) else 0o644
-            with open(full, "rb") as f:
-                m["./" + rel] = (mode, f.read())
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(fetch_panel_ipk()))) as outer:
+        data = outer.extractfile("./data.tar.gz").read()
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as dt:
+        for ti in dt.getmembers():
+            if not ti.isfile():
+                continue
+            arc = ti.name if ti.name.startswith("./") else "./" + ti.name
+            arc = arc.replace("//", "/")
+            # 沿用包内权限位。兜底补 755：防止上游 ipk 里某个可执行角色失真
+            # （历史教训：usr/bin/fzs-atio 曾是 0644，面板 AT 桥接直接起不来）。
+            mode = ti.mode & 0o7777
+            rel = ti.name.lstrip("./")
+            if mode & 0o111 == 0 and (
+                    rel.startswith("etc/init.d/") or
+                    rel.startswith("usr/libexec/") or
+                    rel.startswith("usr/bin/")):
+                mode = 0o755
+            m[arc] = (mode, dt.extractfile(ti).read())
     return m
 
 
@@ -418,8 +465,14 @@ def main():
 
     engine_map = collect_engine()
     panel_map = collect_panel()
-    print("[mkpkg] 取材：engine %d 文件 (src/board-files)，panel %d 文件 (src/luci-app-fzs-files)"
-          % (len(engine_map), len(panel_map)))
+    print("[mkpkg] 取材：engine %d 文件 (src/board-files)，panel %d 文件 (fzs1-panel %s-%s ipk)"
+          % (len(engine_map), len(panel_map), PANEL_VER, PANEL_REL))
+    # ★ 闸门：0.3.2 起修的就是 OpenWrt 23.05 上 rpcd file.exec 全废的缺陷
+    #   （file.c:812 的 `sid && env`）。模块缺席 ⇒ 面板所有页面取不到数据，
+    #   而设备侧其实一切正常 —— 这种"看着像没起来"的故障最难查，故在此硬性拦下。
+    if not any(arc.endswith("/fzsexec.js") for arc in panel_map):
+        sys.exit("[mkpkg] 面板 ipk 缺少 www/luci-static/resources/fzsexec.js："
+                 "版本过低（<%s-%s？），OpenWrt 23.05 上面板将全部失效" % (PANEL_VER, PANEL_REL))
 
     engine_ipk = os.path.join(OUT, "imsengine_%s-%s_%s.ipk"
                               % (ENGINE_VER, ENGINE_REL, ENGINE_ARCH))

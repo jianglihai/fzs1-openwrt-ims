@@ -73,8 +73,14 @@ src/board-files/
   usr/lib/imsengine/...                 # patch-fzs + 注入片段（给非本面板的机器兜底）
   etc/uci-defaults/97-ims-engine        # ★ 固件内置不走 postinst，靠它 enable 开机自启
   lib/upgrade/keep.d/imsengine          # sysupgrade 时保留 IMS 配置与学到的 P-CSCF
-src/luci-app-fzs-files/                 # 面板 0.3.1（原生带 IMS 下拉项 + IMS 状态卡片）
-src/luci-app-fzs.Makefile               # PKG_VERSION 0.2.9 → 0.3.1
+src/luci-app-fzs.Makefile               # 内置面板的打包 Makefile（内容取自面板 ipk）
+#  ★ 面板源码不在本仓！真源是独立的 fzs1-panel 项目，本仓只把它发布的
+#    luci-app-fzs_x.y.z_all.ipk 拉来内置（build.sh/tools/mkpkg.py 自动下载）。
+#    曾在此处放过一份 src/luci-app-fzs-files/ 源码副本且 inject 时优先，
+#    造成面板源码两处分叉、版本对不上极难排查 —— 已移除，请勿恢复。
+#    当前内置版本 0.3.2-1：修了 OpenWrt 23.05 上面板所有 AT 交互失效
+#    （rpcd file.c:812 的 `sid && env` 让 file.exec 一律 Permission denied）。
+#    开发期想塞自己的包：FZS_PANEL_IPK=/path/to/x.ipk bash build.sh inject
 imsengine/                              # 引擎 Go 源码（可审计；默认用预编译二进制）
 .github/workflows/build.yml             # GitHub Actions 自动编译
 ```

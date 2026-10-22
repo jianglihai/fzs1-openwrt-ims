@@ -26,12 +26,23 @@ OUT="$HERE/build"
 JOBS="$(nproc)"
 
 # ---- 内置面板（luci-app-fzs）版本与来源 -------------------------------------
-# 面板是独立开源项目 zzt718/fzs1-panel，其 ipk 从该项目 Release 下载。
+# 面板**不在这个仓库里改** —— 它的真源是独立的 fzs1-panel 项目，本仓只负责
+# 把那个项目 Release 上的 ipk 拉来内置（README「从源码构建」也是这么说的）。
+#
+# ★ 为什么必须这样做：曾经在 src/luci-app-fzs-files/ 下放过一份面板源码副本，
+#   inject 时副本优先 ⇒ 每次都想改面板的人都跑到这里改，结果
+#   「真源改了、副本没同步」/「副本改了、真源不知道」，两棵树长期分叉，
+#   排查问题时极易误判命中哪个版本。已删除该副本，**面板一律走 Release**。
+#
 # 可用环境变量覆盖：
-#   FZS_PANEL_IPK=/path/to/luci-app-fzs_x.y.z_all.ipk   （本地文件，开发用）
-#   FZS_PANEL_VER=0.2.9                                  （指定版本，默认取下方）
-PANEL_VER="${FZS_PANEL_VER:-0.2.9}"
-PANEL_REPO="zzt718/fzs1-panel"
+#   FZS_PANEL_IPK=/path/to/luci-app-fzs_x.y.z_all.ipk   （本地文件，开发调试用）
+#   FZS_PANEL_VER=0.3.2-1                               （指定版本）
+#
+# 0.3.2-1 起包含：修复 OpenWrt 23.05 上面板所有 AT 交互失效
+#                （rpcd file.c:812 的 `sid && env` 无条件拒绝导致 file.exec 全废）
+#                 + fzs-at 的 IMS 原生栈旁路能力。
+PANEL_VER="${FZS_PANEL_VER:-0.3.2-1}"
+PANEL_REPO="jianglihai/fzs1-panel"
 
 log(){ echo -e "\n\033[1;36m>>> $*\033[0m"; }
 die(){ echo -e "\n\033[1;31m!! $*\033[0m"; exit 1; }
@@ -137,22 +148,28 @@ EOF
     # 4) 内置面板包（luci-app-fzs）
     mkdir -p package/luci-app-fzs
     cp "$HERE/src/luci-app-fzs.Makefile" package/luci-app-fzs/Makefile
-    #   面板内容：优先用仓库内 src/luci-app-fzs-files/（若随源码分发）；
-    #   否则从面板项目 Release 下载 ipk 解包。
+    #   面板内容：一律从面板项目 Release 下载 ipk 解包 —— 本仓不存面板源码副本。
+    #   ★ 曾存在 src/luci-app-fzs-files/ 副本且 inject 时优先，导致面板源码两处分叉、
+    #     版本对不上难排查；现已彻底改为只走 Release（开发期想塞自己的包，
+    #     用 FZS_PANEL_IPK=xxx.ipk bash build.sh inject）。
     if [ -d "$HERE/src/luci-app-fzs-files" ]; then
-        rm -rf package/luci-app-fzs/files
-        mkdir -p package/luci-app-fzs/files
-        cp -a "$HERE/src/luci-app-fzs-files/." package/luci-app-fzs/files/
-        echo "面板内容：来自 src/luci-app-fzs-files/"
-    else
-        local ipk; ipk="$(fetch_panel)"
-        rm -rf /tmp/fzs_panel && mkdir -p /tmp/fzs_panel
-        ( cd /tmp/fzs_panel && tar xzf "$ipk" && mkdir -p data && tar xzf data.tar.gz -C data )
-        rm -rf package/luci-app-fzs/files
-        mkdir -p package/luci-app-fzs/files
-        cp -a /tmp/fzs_panel/data/. package/luci-app-fzs/files/
-        echo "面板内容：来自 $(basename "$ipk")（$(find package/luci-app-fzs/files -type f | wc -l) 个文件）"
+        echo "面板内容：忽略 src/luci-app-fzs-files/（面板源码请以 fzs1-panel 为准，见 README）"
     fi
+    local ipk; ipk="$(fetch_panel)"
+    local n
+    rm -rf /tmp/fzs_panel && mkdir -p /tmp/fzs_panel
+    ( cd /tmp/fzs_panel && tar xzf "$ipk" && mkdir -p data && tar xzf data.tar.gz -C data ) \
+        || die "面板 ipk 解包失败：$ipk"
+    rm -rf package/luci-app-fzs/files
+    mkdir -p package/luci-app-fzs/files
+    cp -a /tmp/fzs_panel/data/. package/luci-app-fzs/files/
+    n="$(find package/luci-app-fzs/files -type f | wc -l)"
+    [ "$n" -gt 0 ] || die "面板 ipk 解包后没有文件：$ipk"
+    echo "面板内容：来自 $(basename "$ipk")（$n 个文件）"
+    # ★ 闸门：0.3.2-1 修的就是 file.exec 不可用，模块缺失等于整个面板取不到数据。
+    #   宁可在这里失败，也不要刷进设备才发现"页面全是空白"。
+    [ -f package/luci-app-fzs/files/www/luci-static/resources/fzsexec.js ] \
+        || die "面板缺少 www/luci-static/resources/fzsexec.js —— 版本太低（<$PANEL_VER？），OpenWrt 23.05 上面板将全部失效"
 
     # 5) ★ 强制执行位 —— 本仓在 Windows 上维护，git 不记录可执行位
     #    （core.filemode=false），提交时脚本一律退化成 100644。
