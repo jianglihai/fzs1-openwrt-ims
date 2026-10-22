@@ -44,8 +44,13 @@ JOBS="$(nproc)"
 PANEL_VER="${FZS_PANEL_VER:-0.3.2-1}"
 PANEL_REPO="jianglihai/fzs1-panel"
 
-log(){ echo -e "\n\033[1;36m>>> $*\033[0m"; }
-die(){ echo -e "\n\033[1;31m!! $*\033[0m"; exit 1; }
+# ★ 诊断信息必须走 stderr，不能走 stdout。
+#   本脚本里有形如 `ipk="$(fetch_panel)"` 的命令替换：那会把**整个函数的 stdout**
+#   一起捕获进去。若 log 打到 stdout，函数返回的"ipk 路径"就会被日志文本污染
+#   （实测踩过：tar 报 `Cannot open: No such file or directory`，路径里混进了
+#   带 ANSI 转义的日志），这种错还极难看懂 —— 所以这里统一重定向到 stderr。
+log(){ echo -e "\n\033[1;36m>>> $*\033[0m" >&2; }
+die(){ echo -e "\n\033[1;31m!! $*\033[0m" >&2; exit 1; }
 
 # 获取面板 ipk（本地优先，否则从 Release 下载）
 fetch_panel(){
