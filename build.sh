@@ -82,6 +82,23 @@ clone(){
         log "拉取 Argon 主题（第三方）"
         clone_third luci-theme-argon     https://github.com/jerrykuku/luci-theme-argon.git
         clone_third luci-app-argon-config https://github.com/jerrykuku/luci-app-argon-config.git
+        # ★ 摘掉 +wget-any 依赖（2026-10-22 实证踩坑）：
+        #   Argon 的 Makefile 里 DEPENDS 含 +wget-any，但它是 OpenWrt **24.x 才引入**
+        #   的虚拟包（见 openwrt/openwrt 提交 "uclient: provide virtual wget-any"），
+        #   23.05 的 feeds 里没有任何包提供它。结果 defconfig 只打一句
+        #     WARNING: Makefile 'package/luci-theme-argon/Makefile' has a
+        #              dependency on 'wget-any', which does not exist
+        #   然后【静默丢弃整个包】——编译日志里再没有一行 make -C package/luci-theme-argon，
+        #   固件里自然没有 /www/luci-static/argon。
+        #   我们已在 99-fzs-branding 关掉在线壁纸（online_wallpaper='none'），
+        #   压根不需要 wget，直接把这个依赖摘掉即可。
+        for mf in luci-theme-argon luci-app-argon-config; do
+            f="$SRC/package/$mf/Makefile"
+            if [ -f "$f" ] && grep -q 'wget-any' "$f"; then
+                sed -i -E 's/[[:space:]]*\+wget-any//g' "$f"
+                log "  已摘除 $mf 的 +wget-any 依赖"
+            fi
+        done
     fi
 }
 
@@ -200,6 +217,27 @@ build(){
     cp bin/targets/ramips/mt76x8/openwrt-ramips-mt76x8-mibox_668m2-*.bin "$OUT/" 2>/dev/null || true
     cp bin/targets/ramips/mt76x8/sha256sums "$OUT/sha256sums" 2>/dev/null || true
     ls -la "$OUT"
+
+    # ---- 闸门：确认关键包真的进了镜像，而不是被 defconfig 静默丢弃 ----
+    # 教训：CONFIG_PACKAGE_xxx=y 写在 .config 里【不代表】它会编进固件。
+    #   包不在任何 feed（Argon 第一版）、或 DEPENDS 指向不存在的包（wget-any），
+    #   make 都只是打一行 WARNING 然后跳过，产物照出、编译照 success。
+    # 所以必须显式核一次 rootfs 与 ipk，否则永远发现不了"界面没主题"这种问题。
+    if [ "${FZS_NO_ARGON:-0}" != "1" ]; then
+        argon_root="$(ls -d "$SRC"/build_dir/target-*/root-ramips/www/luci-static/argon 2>/dev/null | head -1)"
+        argon_ipk="$(ls "$SRC"/bin/packages/*/luci/luci-theme-argon_*.ipk 2>/dev/null | head -1)"
+        echo "================ 关键包入镜像核实 ================"
+        echo "  rootfs 目录 : ${argon_root:-（未找到）}"
+        echo "  生成的 ipk  : ${argon_ipk:-（未找到）}"
+        if [ -n "$argon_root" ] || [ -n "$argon_ipk" ]; then
+            echo "  >>> PASS：Argon 已编入固件"
+            echo "=================================================="
+        else
+            echo "::error::Argon 未编入固件（rootfs/ipk 都没有）。99-fzs-branding 会自动退回 bootstrap，界面可用但不是预期观感"
+            echo "  >>> FAIL：Argon 未编入固件"
+            echo "=================================================="
+        fi
+    fi
 }
 
 # ---------------------------------------------------------------------------
