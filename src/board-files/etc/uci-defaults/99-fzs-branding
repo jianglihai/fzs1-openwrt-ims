@@ -13,8 +13,17 @@ if [ -f /etc/shadow ]; then
 	fi
 fi
 
-# ---- 2. Argon 主题设为默认 + 亮色 + 内置背景（不用每日在线壁纸）----
-uci -q set luci.main.mediaurlbase='/luci-static/argon'
+# ---- 2. 主题：优先 Argon（亮色），没编进去就退回 bootstrap（亮色）----
+# ★ 关键：绝不能指向不存在的主题目录。历史上 config.seed 里写了
+#   CONFIG_PACKAGE_luci-theme-argon=y，但 Argon 不在官方 feed，选项被静默丢弃，
+#   而这里又硬指 /luci-static/argon → CSS 404 → LuCI 落回 bootstrap-dark（深色），
+#   与出厂界面（浅色蓝顶栏）完全是两个观感，用户以为"界面坏了"。
+#   所以改成「先探测资源目录是否存在，再决定指向谁」。
+if [ -d /www/luci-static/argon ]; then
+	uci -q set luci.main.mediaurlbase='/luci-static/argon'
+else
+	uci -q set luci.main.mediaurlbase='/luci-static/bootstrap'
+fi
 uci -q set luci.main.lang='zh_cn'
 
 # Argon 全局配置
