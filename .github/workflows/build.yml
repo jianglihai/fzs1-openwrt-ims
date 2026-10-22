@@ -9,11 +9,28 @@
 name: Build FZS-S1 IMS Firmware
 
 on:
+  # ★ paths 过滤：全量编译要 40~70 分钟，且带 concurrency（新 run 会 cancel 旧 run）。
+  #   曾经一次 README 提交就把跑了 32 分钟的编译挤掉，故这里限定只有真正影响构建产物
+  #   的路径变更才触发 —— 文档/README/markdown 变更不再浪费一次完整编译。
   push:
     branches: [ main ]
     tags: [ 'v*' ]
+    paths:
+      - 'src/**'
+      - 'patches/**'
+      - 'build.sh'
+      - 'tools/**'
+      - 'config/**'
+      - '.github/workflows/build.yml'
   pull_request:
     branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'patches/**'
+      - 'build.sh'
+      - 'tools/**'
+      - 'config/**'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
       build_engine:
