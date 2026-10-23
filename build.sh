@@ -111,8 +111,20 @@ clone(){
         for mf in luci-theme-argon luci-app-argon-config; do
             f="$SRC/package/$mf/Makefile"
             if [ -f "$f" ] && grep -q 'wget-any' "$f"; then
-                sed -i -E 's/[[:space:]]*\+wget-any//g' "$f"
-                log "  已摘除 $mf 的 +wget-any 依赖"
+                # ★ 匹配必须覆盖两种写法，否则 sed 静默什么都不做：
+                #    Argon master 实际写：  LUCI_DEPENDS:=+luci-base +USE_APK:wget-any +!USE_APK:wget ...
+                #    旧版本写作：          LUCI_DEPENDS:=+luci-base +wget-any ...
+                # 历史 bug（2026-10-22/23 两次编译白跑）：sed 表达式只写了 `\+wget-any`，
+                # 而 grep 是拿 'wget-any' 子串去匹配的 —— 于是 grep 命中、sed 什么都删不掉，
+                # 日志里还喜滋滋打一句「已摘除」，make 下一秒照样 WARNING 丢弃整包。
+                # 所以这里必须「改完再验一次」，而不是盲信前面那个 grep。
+                sed -i -E 's/[[:space:]][+](USE_APK:)?wget-any//g' "$f"
+                if grep -q 'wget-any' "$f"; then
+                    echo "::error::$mf 的 wget-any 依赖摘除失败 —— 该包会在 defconfig 时被丢弃"
+                    echo "         残留行：$(grep -n 'wget-any' "$f" | head -1)"
+                else
+                    log "  已摘除 $mf 的 wget-any 依赖（已复核无残留）"
+                fi
             fi
         done
     fi
